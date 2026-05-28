@@ -487,5 +487,8 @@ if __name__ == "__main__":
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
+            # Named agent → server explicitly dispatches "nova" into each room.
+            # Without this, newer LiveKit won't auto-route the worker to rooms.
+            agent_name="nova",
         )
     )
