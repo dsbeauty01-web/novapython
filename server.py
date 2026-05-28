@@ -17,6 +17,7 @@ import time
 import json
 import secrets
 import logging
+from datetime import timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -114,7 +115,7 @@ async def create_session(req: CreateSessionReq):
                 can_publish_data=True,  # browser sends game events via data
             )
         )
-        .with_ttl(60 * 10)
+        .with_ttl(timedelta(minutes=10))
         .to_jwt()
     )
 
