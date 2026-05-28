@@ -1,0 +1,18 @@
+# Nova v200 — Python LiveKit Agents + Runway plugin
+# Complete deps for Days 1-5.
+
+# Core LiveKit Agents framework + plugins
+livekit-agents[runway,deepgram,elevenlabs,anthropic,silero,turn-detector]>=1.5.0,<2.0.0
+
+# Gemini Flash for vision (Day 4 — "she sees me")
+google-generativeai>=0.8.0
+
+# FastAPI HTTP server
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# Env loading
+python-dotenv>=1.0.0
+
+# HTTP client (used by vision module)
+httpx>=0.27.0
