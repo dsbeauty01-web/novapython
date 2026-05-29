@@ -115,26 +115,30 @@ async def create_session(req: CreateSessionReq):
                 can_publish_data=True,  # browser sends game events via data
             )
         )
-        # Explicitly summon the named "nova" worker into this room.
-        # This is what makes the agent actually JOIN (newer LiveKit needs it).
-        .with_room_config(
-            api.RoomConfiguration(
-                agents=[api.RoomAgentDispatch(agent_name="nova", metadata=room_metadata)]
-            )
-        )
         .with_ttl(timedelta(minutes=10))
         .to_jwt()
     )
 
-    # Pre-create room with metadata (agent worker dispatches on this)
+    # Pre-create room AND explicitly dispatch the "nova" agent into it.
+    # The explicit dispatch is the reliable way — the token-embedded version
+    # was being silently ignored.
     try:
         livekit_api = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         await livekit_api.room.create_room(
             api.CreateRoomRequest(name=room_name, metadata=room_metadata)
         )
+        # Summon Nova into this room — this is what makes the worker actually JOIN
+        dispatch = await livekit_api.agent_dispatch.create_dispatch(
+            api.CreateAgentDispatchRequest(
+                agent_name="nova",
+                room=room_name,
+                metadata=room_metadata,
+            )
+        )
+        logger.info(f"[dispatch] nova → room={room_name} id={dispatch.id}")
         await livekit_api.aclose()
     except Exception as e:
-        logger.warning(f"pre-create room failed (will use default): {e}")
+        logger.error(f"[dispatch] FAILED to summon nova: {e}")
 
     logger.info(f"[create-session] room={room_name} kid_id={kid_id}")
 
