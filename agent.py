@@ -422,7 +422,10 @@ async def entrypoint(ctx: JobContext):
         ),
         vad=silero.VAD.load(),
     )
-    if TURN_DETECTOR_AVAILABLE:
+    # Turn-detector disabled: its model file (model_q8.onnx) wasn't available
+    # in this environment. Silero VAD (already configured) handles turn-taking
+    # just fine. Re-enable later if you choose to bake the model into the build.
+    if False:  # was: if TURN_DETECTOR_AVAILABLE:
         session_kwargs["turn_detection"] = MultilingualModel()
         logger.info("[nova-v200] turn detector enabled")
 
