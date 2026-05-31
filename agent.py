@@ -430,51 +430,67 @@ async def entrypoint(ctx: JobContext):
         logger.info("[nova-v200] turn detector enabled")
 
     session = AgentSession(**session_kwargs)
+    logger.info("[nova-v200] step 1: AgentSession created")
 
     # Runway face plugin
-    runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
-    await runway_avatar.start(session, room=ctx.room)
-    logger.info(f"[nova-v200] runway avatar started, id={avatar_id[:8]}")
+    try:
+        runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
+        await runway_avatar.start(session, room=ctx.room)
+        logger.info(f"[nova-v200] step 2: runway avatar started, id={avatar_id[:8]}")
+    except Exception as e:
+        logger.exception(f"[nova-v200] CRASH at runway start: {e}")
+        raise
 
     # The agent
     agent = NovaAgent(state)
+    logger.info("[nova-v200] step 3: NovaAgent created")
 
     # Data channel listener BEFORE session starts (catch early events)
     register_data_handler(ctx.room, state, session)
+    logger.info("[nova-v200] step 4: data handler registered")
 
-    await session.start(
-        agent=agent,
-        room=ctx.room,
-    )
+    try:
+        await session.start(
+            agent=agent,
+            room=ctx.room,
+        )
+        logger.info("[nova-v200] step 5: session.start COMPLETE")
+    except Exception as e:
+        logger.exception(f"[nova-v200] CRASH at session.start: {e}")
+        raise
 
     # Connect Nova's speaking state to the PaceGate (smart pacing).
-    # If this event isn't available in this LiveKit version, the gate simply
-    # relies on its backup timer — Nova still works, just paced by the floor.
     try:
         @session.on("agent_state_changed")
         def _on_agent_state(ev):
             speaking = getattr(ev, "new_state", None) == "speaking"
             state.pace.mark_speaking(speaking)
-        logger.info("[nova-v200] smart pacing hooked (agent_state_changed)")
+        logger.info("[nova-v200] step 6: smart pacing hooked")
     except Exception as e:
-        logger.warning(f"[nova-v200] smart pacing unavailable, using backup timer: {e}")
+        logger.warning(f"[nova-v200] smart pacing unavailable: {e}")
 
     # GREETING — first words from OUR brain
     state.greeting_done = True
-    if state.ctx.name and state.ctx.sessions_before > 0:
-        await session.generate_reply(
-            instructions=(
-                f"Greet {state.ctx.name} warmly — they came back. "
-                f"Use their name. ONE sentence with '...' pauses."
+    logger.info("[nova-v200] step 7: about to generate greeting...")
+    try:
+        if state.ctx.name and state.ctx.sessions_before > 0:
+            await session.generate_reply(
+                instructions=(
+                    f"Greet {state.ctx.name} warmly — they came back. "
+                    f"Use their name. ONE sentence with '...' pauses."
+                )
             )
-        )
-    else:
-        await session.generate_reply(
-            instructions=(
-                "Greet kid softly. Ask their name. "
-                "Say something like: 'oh hi friend... I'm Nova... what's your name?'"
+        else:
+            await session.generate_reply(
+                instructions=(
+                    "Greet kid softly. Ask their name. "
+                    "Say something like: 'oh hi friend... I'm Nova... what's your name?'"
+                )
             )
-        )
+        logger.info("[nova-v200] step 8: GREETING SENT SUCCESSFULLY")
+    except Exception as e:
+        logger.exception(f"[nova-v200] CRASH at greeting: {e}")
+        raise
 
     # Kick off vision request in background
     asyncio.create_task(_vision_trigger_loop(ctx.room, state))
