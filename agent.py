@@ -522,25 +522,41 @@ async def entrypoint(ctx: JobContext):
     # GREETING — first words from OUR brain
     state.greeting_done = True
     logger.info("[nova-v200] step 7: about to generate greeting...")
+
+    if state.ctx.name and state.ctx.sessions_before > 0:
+        greet_instructions = (
+            f"Greet {state.ctx.name} warmly — they came back. "
+            f"Use their name. ONE sentence with '...' pauses."
+        )
+        fallback_greeting = f"oh... hi {state.ctx.name}... I missed you..."
+    else:
+        greet_instructions = (
+            "Greet kid softly. Ask their name. "
+            "Say something like: 'oh hi friend... I'm Nova... what's your name?'"
+        )
+        fallback_greeting = "oh hi friend... I'm Nova... what's your name?"
+
     try:
-        if state.ctx.name and state.ctx.sessions_before > 0:
-            await session.generate_reply(
-                instructions=(
-                    f"Greet {state.ctx.name} warmly — they came back. "
-                    f"Use their name. ONE sentence with '...' pauses."
-                )
-            )
-        else:
-            await session.generate_reply(
-                instructions=(
-                    "Greet kid softly. Ask their name. "
-                    "Say something like: 'oh hi friend... I'm Nova... what's your name?'"
-                )
-            )
-        logger.info("[nova-v200] step 8: GREETING SENT SUCCESSFULLY")
+        # 10s timeout — if generate_reply hangs (LLM timeout), don't kill the session
+        await asyncio.wait_for(
+            session.generate_reply(instructions=greet_instructions),
+            timeout=10.0,
+        )
+        logger.info("[nova-v200] step 8: GREETING SENT SUCCESSFULLY (via LLM)")
+    except asyncio.TimeoutError:
+        logger.warning("[nova-v200] greeting LLM timed out → falling back to plain say()")
+        try:
+            await session.say(fallback_greeting)
+            logger.info("[nova-v200] step 8: GREETING SENT (fallback)")
+        except Exception as e2:
+            logger.error(f"[nova-v200] fallback greeting also failed: {e2}")
     except Exception as e:
-        logger.exception(f"[nova-v200] CRASH at greeting: {e}")
-        raise
+        logger.exception(f"[nova-v200] greeting failed (non-timeout): {e}")
+        try:
+            await session.say(fallback_greeting)
+            logger.info("[nova-v200] step 8: GREETING SENT (fallback after error)")
+        except Exception as e2:
+            logger.error(f"[nova-v200] fallback greeting also failed: {e2}")
 
     # Kick off vision request in background
     asyncio.create_task(_vision_trigger_loop(ctx.room, state))
