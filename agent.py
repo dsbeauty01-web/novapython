@@ -202,21 +202,21 @@ class NovaAgent(Agent):
         super().__init__(instructions=state.system_prompt())
         self.state = state
 
-    def refresh_instructions(self):
+    async def refresh_instructions(self):
         """Rebuild instructions based on current state (called each turn)."""
         new_prompt = self.state.system_prompt()
-        self.update_instructions(new_prompt)
+        await self.update_instructions(new_prompt)
 
     async def on_user_turn_completed(self, chat_ctx, new_message):
         """Hook fired when kid finishes speaking. Refresh prompt + pace."""
-        self.refresh_instructions()
+        await self.refresh_instructions()
         await self.state.pace.acquire()
 
 
 # ────────────────────────────────────────────────────────────────────────
 # Per-room control channel — browser pushes game events via LiveKit data
 # ────────────────────────────────────────────────────────────────────────
-def register_data_handler(room: rtc.Room, state: NovaSessionState, session: AgentSession):
+def register_data_handler(room: rtc.Room, state: NovaSessionState, session: AgentSession, agent: "NovaAgent"):
     """Listen for game events from the browser."""
 
     @room.on("data_received")
@@ -235,11 +235,11 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 if state.ctx.phase == "dance" and event.get("event") in (
                     "hit", "miss", "first_hit", "freeze_hit", "freeze_miss"
                 ):
-                    asyncio.create_task(_react_to_event(session, state))
+                    asyncio.create_task(_react_to_event(session, state, agent))
 
                 # Phase transition to goodbye → speak final goodbye
                 if event.get("event") == "phase" and event.get("phase") == "goodbye":
-                    asyncio.create_task(_speak_goodbye(session, state))
+                    asyncio.create_task(_speak_goodbye(session, state, agent))
 
             elif kind == "vision-observation":
                 obs = msg.get("text", "").strip()
@@ -247,7 +247,7 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     state.vision_fired = True
                     state.ctx.observed_visual = obs
                     logger.info(f"[data] vision observation: '{obs}'")
-                    asyncio.create_task(_drop_in_observation(session, state, obs))
+                    asyncio.create_task(_drop_in_observation(session, state, obs, agent))
 
         except Exception as e:
             logger.error(f"[data] parse error: {e}")
@@ -256,12 +256,11 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
 # ────────────────────────────────────────────────────────────────────────
 # Reaction helpers
 # ────────────────────────────────────────────────────────────────────────
-async def _react_to_event(session: AgentSession, state: NovaSessionState):
+async def _react_to_event(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
     """Game event happened — generate phase-aware reaction."""
     await state.pace.acquire()
     # Refresh prompt to current phase
-    if hasattr(session.agent, "refresh_instructions"):
-        session.agent.refresh_instructions()
+    await agent.refresh_instructions()
     instructions = (
         f"React to game event '{state.ctx.last_event}'. "
         f"Current streak: {state.ctx.streak}. "
@@ -273,12 +272,11 @@ async def _react_to_event(session: AgentSession, state: NovaSessionState):
         logger.error(f"[react] generate_reply failed: {e}")
 
 
-async def _speak_goodbye(session: AgentSession, state: NovaSessionState):
+async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
     """Phase transitioned to goodbye — warm wrap-up."""
     await state.pace.acquire()
     memory.store.increment_sessions(state.kid_id)
-    if hasattr(session.agent, "refresh_instructions"):
-        session.agent.refresh_instructions()
+    await agent.refresh_instructions()
     instructions = (
         f"The song ended. Speak warm goodbye now. "
         f"Stats: hits={state.ctx.hits}, max_streak={state.ctx.max_streak}. "
@@ -290,11 +288,10 @@ async def _speak_goodbye(session: AgentSession, state: NovaSessionState):
         logger.error(f"[goodbye] generate_reply failed: {e}")
 
 
-async def _drop_in_observation(session: AgentSession, state: NovaSessionState, observation: str):
+async def _drop_in_observation(session: AgentSession, state: NovaSessionState, observation: str, agent: "NovaAgent"):
     """Drop in vision observation naturally."""
     await state.pace.acquire()
-    if hasattr(session.agent, "refresh_instructions"):
-        session.agent.refresh_instructions()
+    await agent.refresh_instructions()
     instructions = (
         f"You just noticed: '{observation}'. "
         f"Say it warmly with '...' pauses, like you spotted it. ONE sentence."
@@ -446,7 +443,7 @@ async def entrypoint(ctx: JobContext):
     logger.info("[nova-v200] step 3: NovaAgent created")
 
     # Data channel listener BEFORE session starts (catch early events)
-    register_data_handler(ctx.room, state, session)
+    register_data_handler(ctx.room, state, session, agent)
     logger.info("[nova-v200] step 4: data handler registered")
 
     try:
