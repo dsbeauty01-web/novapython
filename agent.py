@@ -249,6 +249,34 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     logger.info(f"[data] vision observation: '{obs}'")
                     asyncio.create_task(_drop_in_observation(session, state, obs, agent))
 
+            # ═══ TEST BENCH HANDLERS ═══
+            elif kind == "test-utter":
+                # Force Nova to say EXACTLY this text right now
+                text = msg.get("text", "").strip()
+                if text:
+                    logger.info(f"[test] utter: '{text[:60]}'")
+                    asyncio.create_task(_test_utter(session, state, text))
+
+            elif kind == "test-inject":
+                # Inject a persona overlay — Nova's next replies follow it
+                overlay = msg.get("overlay", "").strip()
+                trigger_speak = msg.get("trigger_speak", False)
+                logger.info(f"[test] inject overlay: '{overlay[:80]}'")
+                state.ctx.persona_overlay = overlay or None
+                asyncio.create_task(agent.refresh_instructions())
+                if trigger_speak:
+                    asyncio.create_task(_test_speak_with_overlay(session, state, agent))
+
+            elif kind == "test-clear-overlay":
+                logger.info("[test] cleared persona overlay")
+                state.ctx.persona_overlay = None
+                asyncio.create_task(agent.refresh_instructions())
+
+            elif kind == "test-force-phase":
+                new_phase = msg.get("phase", "recognition")
+                logger.info(f"[test] force phase → {new_phase}")
+                state.push_event({"event": "phase", "phase": new_phase})
+
         except Exception as e:
             logger.error(f"[data] parse error: {e}")
 
@@ -300,6 +328,31 @@ async def _drop_in_observation(session: AgentSession, state: NovaSessionState, o
         await session.generate_reply(instructions=instructions)
     except Exception as e:
         logger.error(f"[vision] generate_reply failed: {e}")
+
+
+# ────────────────────────────────────────────────────────────────────────
+# TEST BENCH helpers — used by nova-test.html sandbox only
+# ────────────────────────────────────────────────────────────────────────
+async def _test_utter(session: AgentSession, state: NovaSessionState, text: str):
+    """Force Nova to say EXACTLY this text. No LLM, no interpretation."""
+    await state.pace.acquire()
+    try:
+        await session.say(text)
+        logger.info(f"[test] uttered: '{text[:40]}'")
+    except Exception as e:
+        logger.error(f"[test] utter failed: {e}")
+
+
+async def _test_speak_with_overlay(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
+    """After an overlay is injected, ask Nova to speak so we hear it apply."""
+    await state.pace.acquire()
+    await agent.refresh_instructions()
+    try:
+        await session.generate_reply(
+            instructions="Speak ONE short sentence now, following any active override."
+        )
+    except Exception as e:
+        logger.error(f"[test] overlay-speak failed: {e}")
 
 
 # ────────────────────────────────────────────────────────────────────────
