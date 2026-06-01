@@ -231,6 +231,7 @@ class NovaContext:
     best_moment: Optional[str] = None
     favorite_move: Optional[str] = None
     observed_visual: Optional[str] = None  # From Gemini vision
+    persona_overlay: Optional[str] = None  # LIVE INJECTION — overrides/extends behavior mid-session
 
 
 def build_system_prompt(ctx: NovaContext) -> str:
@@ -259,6 +260,11 @@ def build_system_prompt(ctx: NovaContext) -> str:
     if ctx.observed_visual:
         pieces.append(f"\n═══ WHAT YOU CAN SEE RIGHT NOW ═══\n{ctx.observed_visual}\n"
                       "You can mention this naturally — ONCE per session — when there's a natural moment.")
+
+    # LIVE PERSONA INJECTION — put LAST so recency weight is highest.
+    # This is how the test sandbox / future game-state can tweak Nova in real time.
+    if ctx.persona_overlay:
+        pieces.append(f"\n═══ ACTIVE OVERRIDE — FOLLOW THIS NOW ═══\n{ctx.persona_overlay}")
 
     return "\n\n".join(pieces)
 
