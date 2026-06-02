@@ -33,11 +33,13 @@ from livekit import agents, rtc
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import (
     deepgram,
-    anthropic as anthropic_plugin,
     elevenlabs,
     runway,
     silero,
 )
+
+# Gemini is the brain — single LLM, no Anthropic anymore.
+from livekit.plugins import google as google_plugin
 
 # Optional: turn detector for natural conversation pauses
 try:
@@ -463,6 +465,15 @@ async def entrypoint(ctx: JobContext):
 
     avatar_id = os.getenv("NOVA_AVATAR_ID", "e976bbb2-de60-4da6-845e-4b754050e55b")
 
+    # ─────────────────────────────────────────────────────────────
+    # Nova's brain: Gemini 2.5 Flash (single LLM, no Anthropic).
+    # ─────────────────────────────────────────────────────────────
+    llm_instance = google_plugin.LLM(
+        model=os.getenv("NOVA_GEMINI_MODEL", "gemini-2.5-flash"),
+        temperature=float(os.getenv("NOVA_TEMPERATURE", "0.85")),  # higher for fairy creativity
+    )
+    logger.info("[nova-v200] brain = Gemini 2.5 Flash")
+
     # Build session pipeline
     session_kwargs = dict(
         stt=deepgram.STT(
@@ -470,21 +481,18 @@ async def entrypoint(ctx: JobContext):
             language="multi",
             interim_results=True,
         ),
-        llm=anthropic_plugin.LLM(
-            model="claude-haiku-4-5-20251001",
-            temperature=0.7,
-        ),
+        llm=llm_instance,
         tts=elevenlabs.TTS(
-            # Matilda — young, warm female ("gentle big sister"). Swap by ear:
-            # Charlotte (soft/breathy), Dorothy (kids' stories), Lily (warm young).
-            # Override at test time with NOVA_VOICE_ID — no code edit needed.
-            voice_id=os.getenv("NOVA_VOICE_ID", "XrExE9yKIg1WjnnlVkGX"),
+            # Lily (default): young, warm, kid-friendly — fits fairy vibe.
+            # Matilda was too adult/neutral. Switchable via env without code edit.
+            # Other voices to try: pFZP5JQG7iQjIQuC4Bku (Lily), XB0fDUnXU5powFXDhCwa (Charlotte)
+            voice_id=os.getenv("NOVA_VOICE_ID", "pFZP5JQG7iQjIQuC4Bku"),
             model="eleven_flash_v2_5",
             voice_settings=elevenlabs.VoiceSettings(
-                # Calm but ALIVE — not flat. Tunable via env for test-time tuning.
-                stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.5")),
-                similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.75")),
-                style=float(os.getenv("NOVA_VOICE_STYLE", "0.2")),
+                # Cranked for expressiveness — fairy needs range, not flatness.
+                stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.35")),
+                similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.80")),
+                style=float(os.getenv("NOVA_VOICE_STYLE", "0.65")),
                 use_speaker_boost=True,
             ),
         ),
@@ -543,16 +551,16 @@ async def entrypoint(ctx: JobContext):
 
     if state.ctx.name and state.ctx.sessions_before > 0:
         greet_instructions = (
-            f"Greet {state.ctx.name} warmly — they came back. "
-            f"Use their name. ONE sentence with '...' pauses."
+            f"Greet {state.ctx.name} like a fairy who's been waiting. "
+            f"ONE breathless sentence. Use a *gasp* if it fits."
         )
-        fallback_greeting = f"oh... hi {state.ctx.name}... I missed you..."
+        fallback_greeting = f"*gasp* — {state.ctx.name}! you found me again!"
     else:
         greet_instructions = (
-            "Greet kid softly. Ask their name. "
-            "Say something like: 'oh hi friend... I'm Nova... what's your name?'"
+            "You just appeared and met this kid. Be a curious fairy. "
+            "Tell them your name (Nova) and ask theirs ONCE."
         )
-        fallback_greeting = "oh hi friend... I'm Nova... what's your name?"
+        fallback_greeting = "oh! — hi! — I'm Nova... who are you?"
 
     try:
         # 10s timeout — if generate_reply hangs (LLM timeout), don't kill the session
