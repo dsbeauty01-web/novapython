@@ -277,6 +277,13 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 logger.info(f"[test] force phase → {new_phase}")
                 state.push_event({"event": "phase", "phase": new_phase})
 
+            elif kind == "user-said":
+                # Kid typed instead of (or alongside) speaking. Treat as voice input.
+                text = msg.get("text", "").strip()
+                if text:
+                    logger.info(f"[chat] user-said: '{text[:80]}'")
+                    asyncio.create_task(_user_said(session, state, agent, text))
+
         except Exception as e:
             logger.error(f"[data] parse error: {e}")
 
@@ -353,6 +360,17 @@ async def _test_speak_with_overlay(session: AgentSession, state: NovaSessionStat
         )
     except Exception as e:
         logger.error(f"[test] overlay-speak failed: {e}")
+
+
+async def _user_said(session: AgentSession, state: NovaSessionState, agent: "NovaAgent", text: str):
+    """Browser sent text-as-voice. Inject as user input so Nova replies naturally."""
+    await state.pace.acquire()
+    await agent.refresh_instructions()
+    try:
+        await session.generate_reply(user_input=text)
+        logger.info(f"[chat] Nova replied to: '{text[:40]}'")
+    except Exception as e:
+        logger.error(f"[chat] user_input reply failed: {e}")
 
 
 # ────────────────────────────────────────────────────────────────────────
