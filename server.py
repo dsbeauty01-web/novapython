@@ -80,6 +80,26 @@ async def health():
     return {"ok": True}
 
 
+@app.get("/v2/diag")
+async def diag():
+    """Diagnostic info for the test page — keys + recent activity."""
+    return {
+        "ok": True,
+        "service": "nova-v200-api",
+        "keys": {
+            "LIVEKIT_URL": bool(LIVEKIT_URL),
+            "LIVEKIT_API_KEY": bool(LIVEKIT_API_KEY),
+            "LIVEKIT_API_SECRET": bool(LIVEKIT_API_SECRET),
+            "ANTHROPIC_API_KEY": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "ELEVENLABS_API_KEY": bool(os.getenv("ELEVENLABS_API_KEY") or os.getenv("ELEVEN_API_KEY")),
+            "DEEPGRAM_API_KEY": bool(os.getenv("DEEPGRAM_API_KEY")),
+            "GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
+            "RUNWAYML_API_SECRET": bool(os.getenv("RUNWAYML_API_SECRET")),
+        },
+        "total_kids": len(memory.store.all_kids()),
+    }
+
+
 # ────────────────────────────────────────────────────────────────────────
 # /v2/create-session — issue LiveKit room token to browser
 # ────────────────────────────────────────────────────────────────────────
