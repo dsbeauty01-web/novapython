@@ -366,13 +366,15 @@ async def _test_speak_with_overlay(session: AgentSession, state: NovaSessionStat
 
 async def _user_said(session: AgentSession, state: NovaSessionState, agent: "NovaAgent", text: str):
     """Browser sent text-as-voice. Inject as user input so Nova replies naturally."""
+    logger.info(f"[TYPE] kid typed → '{text[:80]}'")
     await state.pace.acquire()
     await agent.refresh_instructions()
+    logger.info("[BRAIN] generating reply to typed input...")
     try:
         await session.generate_reply(user_input=text)
-        logger.info(f"[chat] Nova replied to: '{text[:40]}'")
+        logger.info(f"[BRAIN] reply call returned for: '{text[:40]}'")
     except Exception as e:
-        logger.error(f"[chat] user_input reply failed: {e}")
+        logger.exception(f"[BRAIN] generate_reply FAILED for typed input: {e}")
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -467,10 +469,19 @@ async def entrypoint(ctx: JobContext):
 
     # ─────────────────────────────────────────────────────────────
     # Nova's brain: Gemini 2.5 Flash (single LLM, no Anthropic).
+    # LiveKit's google plugin looks for GOOGLE_API_KEY — but our worker
+    # has GEMINI_API_KEY (the same value, different env name from vision).
+    # Pass it explicitly so it works regardless of which is set.
     # ─────────────────────────────────────────────────────────────
+    gemini_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not gemini_key:
+        logger.error("[nova-v200] FATAL: no GOOGLE_API_KEY or GEMINI_API_KEY in env")
+        raise RuntimeError("Gemini key missing — set GOOGLE_API_KEY or GEMINI_API_KEY on the worker")
+
     llm_instance = google_plugin.LLM(
         model=os.getenv("NOVA_GEMINI_MODEL", "gemini-2.5-flash"),
         temperature=float(os.getenv("NOVA_TEMPERATURE", "0.85")),  # higher for fairy creativity
+        api_key=gemini_key,
     )
     logger.info("[nova-v200] brain = Gemini 2.5 Flash")
 
@@ -508,6 +519,55 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession(**session_kwargs)
     logger.info("[nova-v200] step 1: AgentSession created")
 
+    # ─────────────────────────────────────────────────────────────
+    # HEAVY LOGGING HOOKS — distinct log line at each pipeline stage.
+    # Each step gets a tag so we can tell exactly WHERE a session breaks:
+    #   [HEAR]  — Deepgram transcribed kid's voice
+    #   [TYPE]  — kid typed (via user-said)
+    #   [BRAIN] — Gemini being called / replied / failed
+    #   [SPEAK] — Nova spoke (audio went out)
+    #   [SILENT]— nothing came back from the brain
+    # If you see [HEAR] but no [BRAIN], STT works but brain isn't picking up.
+    # If [BRAIN] but no [SPEAK], brain replied but TTS/Runway failed.
+    # ─────────────────────────────────────────────────────────────
+    try:
+        @session.on("user_input_transcribed")
+        def _on_transcribed(ev):
+            text = getattr(ev, "transcript", "") or getattr(ev, "text", "")
+            is_final = getattr(ev, "is_final", True)
+            if is_final and text.strip():
+                logger.info(f"[HEAR] kid voice → '{text[:80]}'")
+    except Exception as e:
+        logger.warning(f"[hook] user_input_transcribed unavailable: {e}")
+
+    try:
+        @session.on("agent_state_changed")
+        def _on_agent_state(ev):
+            new_state = getattr(ev, "new_state", None)
+            old_state = getattr(ev, "old_state", None)
+            if new_state:
+                logger.info(f"[BRAIN] state {old_state} → {new_state}")
+            speaking = (new_state == "speaking")
+            state.pace.mark_speaking(speaking)
+    except Exception as e:
+        logger.warning(f"[hook] agent_state_changed unavailable: {e}")
+
+    try:
+        @session.on("conversation_item_added")
+        def _on_item(ev):
+            item = getattr(ev, "item", None)
+            if not item: return
+            role = getattr(item, "role", "?")
+            txt = getattr(item, "text_content", None) or ""
+            if isinstance(txt, list): txt = " ".join(str(x) for x in txt)
+            txt = str(txt)[:140]
+            if role == "assistant" and txt:
+                logger.info(f"[SPEAK] Nova said → '{txt}'")
+            elif role == "user" and txt:
+                logger.info(f"[HEAR] confirmed user msg → '{txt}'")
+    except Exception as e:
+        logger.warning(f"[hook] conversation_item_added unavailable: {e}")
+
     # Runway face plugin
     try:
         runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
@@ -535,15 +595,7 @@ async def entrypoint(ctx: JobContext):
         logger.exception(f"[nova-v200] CRASH at session.start: {e}")
         raise
 
-    # Connect Nova's speaking state to the PaceGate (smart pacing).
-    try:
-        @session.on("agent_state_changed")
-        def _on_agent_state(ev):
-            speaking = getattr(ev, "new_state", None) == "speaking"
-            state.pace.mark_speaking(speaking)
-        logger.info("[nova-v200] step 6: smart pacing hooked")
-    except Exception as e:
-        logger.warning(f"[nova-v200] smart pacing unavailable: {e}")
+    logger.info("[nova-v200] step 6: pipeline ready, heavy logging active")
 
     # GREETING — first words from OUR brain
     state.greeting_done = True
