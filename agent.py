@@ -506,15 +506,19 @@ async def entrypoint(ctx: JobContext):
 
     # Build session pipeline
     session_kwargs = dict(
-        stt=deepgram.STT(
-            model=os.getenv("NOVA_STT_MODEL", "nova-3"),
-            # "multi" requires Deepgram multilingual streaming entitlement.
-            # If your account doesn't have it, STT silently produces nothing.
-            # en-US works on every plan, is faster, and is more accurate for English.
-            language=os.getenv("NOVA_STT_LANG", "en-US"),
-            interim_results=True,
-            smart_format=True,
-            punctuate=True,
+        # ─────────────────────────────────────────────────────────────
+        # STT: OpenAI Whisper (gpt-4o-mini-transcribe).
+        # Was: Deepgram. Confirmed broken on this account after 2 days of
+        # logs showing `[MIC-IN] subscribed` but ZERO `[HEAR]` lines — meaning
+        # audio reached Deepgram but no transcripts came back. Likely missing
+        # account entitlement for multilingual streaming on nova-3.
+        # Switched to OpenAI because the OPENAI_API_KEY is already on the
+        # worker and proven working (the brain uses it). Same key, one vendor.
+        # ─────────────────────────────────────────────────────────────
+        stt=openai_plugin.STT(
+            model=os.getenv("NOVA_STT_MODEL", "gpt-4o-mini-transcribe"),
+            language=os.getenv("NOVA_STT_LANG", "en"),
+            api_key=openai_key,
         ),
         llm=llm_instance,
         tts=elevenlabs.TTS(
