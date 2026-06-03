@@ -225,6 +225,8 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
     def on_data(packet: rtc.DataPacket):
         try:
             raw = packet.data.decode("utf-8")
+            # Raw-packet logger — proves a packet arrived at all, regardless of content
+            logger.info(f"[PACKET] received {len(raw)} bytes: {raw[:120]}")
             msg = json.loads(raw)
             kind = msg.get("kind")
 
@@ -515,6 +517,17 @@ async def entrypoint(ctx: JobContext):
     if False:  # was: if TURN_DETECTOR_AVAILABLE:
         session_kwargs["turn_detection"] = MultilingualModel()
         logger.info("[nova-v200] turn detector enabled")
+
+    # Watch for ANY remote track arriving at the worker — confirms mic plumbing
+    @ctx.room.on("track_subscribed")
+    def _on_remote_track(track, publication, participant):
+        kind = getattr(track, "kind", "?")
+        logger.info(f"[MIC-IN] subscribed to {kind} from {participant.identity}")
+
+    @ctx.room.on("track_published")
+    def _on_remote_pub(publication, participant):
+        kind = getattr(publication, "kind", "?")
+        logger.info(f"[MIC-IN] {participant.identity} published {kind} track")
 
     session = AgentSession(**session_kwargs)
     logger.info("[nova-v200] step 1: AgentSession created")
