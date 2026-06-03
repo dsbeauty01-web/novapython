@@ -2,7 +2,7 @@
 # Complete deps for Days 1-5.
 
 # Core LiveKit Agents framework + plugins
-livekit-agents[runway,deepgram,elevenlabs,google,silero,turn-detector]>=1.5.0,<2.0.0
+livekit-agents[runway,deepgram,elevenlabs,openai,silero,turn-detector]>=1.5.0,<2.0.0
 
 # Gemini Flash for vision (Day 4 — "she sees me")
 google-generativeai>=0.8.0
