@@ -1,23 +1,34 @@
 """
-Nova v200 — Full LiveKit Agent worker (Days 1-5 complete)
+Nova v201 — LiveKit Agent worker (OpenAI brain · ElevenLabs Lily voice · Runway face)
 
-This is the BRAIN. It owns every word Nova says.
+This is Nova's BRAIN. It owns every word she says.
 
-Architecture:
-    Kid voice ──► Deepgram STT ──► Claude (phase-aware prompt) ──► ElevenLabs TTS
-                                                                       │
+Architecture (Jun 3 2026):
+    Kid voice ──► Deepgram STT ──► OpenAI gpt-4o-mini ──► ElevenLabs Lily TTS
+                                       (phase-aware prompt)            │
                                                                        ▼
                                                               Runway plugin
                                                                        │
                                                                        ▼
                                                               Nova's face lipsync
 
+Character: Nova is a FAIRY who just found this kid. Magical + curious vibe.
+Soul lives in personality.py — three phase prompts (recognition / dance / goodbye).
+
+History of brain choices:
+- v113: Runway's hidden brain (broke character, abandoned)
+- v200 early: Anthropic Claude Haiku (timed out repeatedly under load)
+- v201 mid:   Gemini 2.5 Flash (blocked our fairy greeting as PROHIBITED_CONTENT
+              — Google's kids-safety classifier is too aggressive)
+- v201 now:   OpenAI gpt-4o-mini (industry-standard for kids apps: Loora, Speak)
+
 Key design decisions:
-- Phase switching: recognition → dance → goodbye (via room data messages)
-- 2.5s minimum pacing baked in: PaceGate enforces it
-- Escalation: streak-based tier (soft → warm → big) picked by personality module
-- Memory: in-memory MemoryStore per kid_id (across sessions within uptime)
-- Vision: Gemini Flash for "she sees me" — fires once per session at natural moment
+- Phase switching: recognition → dance → goodbye (browser pushes via data channel)
+- Pacing: PaceGate keeps Nova from talking over herself (1.2s floor, smart wait)
+- Memory: in-memory MemoryStore per kid_id (within uptime; Postgres later)
+- Vision: Gemini Flash (separate path) for "she sees me" moment
+- Heavy logging: [HEAR]/[TYPE]/[BRAIN]/[SPEAK]/[PACKET]/[MIC-IN] tags so we
+  can pinpoint exactly where a session breaks.
 """
 
 import os
@@ -38,8 +49,12 @@ from livekit.plugins import (
     silero,
 )
 
-# Gemini is the brain — single LLM, no Anthropic anymore.
-from livekit.plugins import google as google_plugin
+# Brain = OpenAI (industry standard for kids apps — Loora, Speak, etc.).
+# Gemini is gone from the brain (its safety filters blocked our fairy prompt
+# as PROHIBITED_CONTENT — verified in production logs Jun 3 2026).
+# Gemini is still used for VISION via the separate google-generativeai client,
+# because vision works fine — only the LLM was getting blocked.
+from livekit.plugins import openai as openai_plugin
 
 # Optional: turn detector for natural conversation pauses
 try:
@@ -54,7 +69,7 @@ import vision
 
 load_dotenv()
 
-logger = logging.getLogger("nova-v200")
+logger = logging.getLogger("nova-v201")
 logging.basicConfig(level=logging.INFO)
 
 
@@ -451,7 +466,7 @@ async def _vision_trigger_loop(room: rtc.Room, state: NovaSessionState):
 # Entrypoint — once per Runway session
 # ────────────────────────────────────────────────────────────────────────
 async def entrypoint(ctx: JobContext):
-    logger.info(f"[nova-v200] entrypoint room={ctx.room.name}")
+    logger.info(f"[nova-v201] entrypoint room={ctx.room.name}")
 
     kid_id = None
     try:
@@ -463,29 +478,31 @@ async def entrypoint(ctx: JobContext):
 
     state = NovaSessionState(kid_id=kid_id)
     logger.info(
-        f"[nova-v200] kid_id={state.kid_id} "
+        f"[nova-v201] kid_id={state.kid_id} "
         f"name={state.ctx.name} sessions_before={state.ctx.sessions_before}"
     )
 
     avatar_id = os.getenv("NOVA_AVATAR_ID", "e976bbb2-de60-4da6-845e-4b754050e55b")
 
     # ─────────────────────────────────────────────────────────────
-    # Nova's brain: Gemini 2.5 Flash (single LLM, no Anthropic).
-    # LiveKit's google plugin looks for GOOGLE_API_KEY — but our worker
-    # has GEMINI_API_KEY (the same value, different env name from vision).
-    # Pass it explicitly so it works regardless of which is set.
+    # Nova's brain: OpenAI GPT-4o-mini (single LLM).
+    # WHY OpenAI not Gemini: Gemini blocked our fairy greeting as PROHIBITED
+    # because "appeared + child + *gasp*" tripped its kids-safety classifier
+    # (Jun 3 2026 logs). OpenAI handles kids' creative content normally.
+    # WHY mini not full 4o: 10x cheaper, fast enough (<800ms), enough quality
+    # for short fairy reactions. Switch via NOVA_OPENAI_MODEL env if needed.
     # ─────────────────────────────────────────────────────────────
-    gemini_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if not gemini_key:
-        logger.error("[nova-v200] FATAL: no GOOGLE_API_KEY or GEMINI_API_KEY in env")
-        raise RuntimeError("Gemini key missing — set GOOGLE_API_KEY or GEMINI_API_KEY on the worker")
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if not openai_key:
+        logger.error("[nova-v201] FATAL: OPENAI_API_KEY missing on worker")
+        raise RuntimeError("OPENAI_API_KEY required — add it on Render → worker → Environment")
 
-    llm_instance = google_plugin.LLM(
-        model=os.getenv("NOVA_GEMINI_MODEL", "gemini-2.5-flash"),
-        temperature=float(os.getenv("NOVA_TEMPERATURE", "0.85")),  # higher for fairy creativity
-        api_key=gemini_key,
+    llm_instance = openai_plugin.LLM(
+        model=os.getenv("NOVA_OPENAI_MODEL", "gpt-4o-mini"),
+        temperature=float(os.getenv("NOVA_TEMPERATURE", "0.85")),
+        api_key=openai_key,
     )
-    logger.info("[nova-v200] brain = Gemini 2.5 Flash")
+    logger.info(f"[nova-v201] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
 
     # Build session pipeline
     session_kwargs = dict(
@@ -516,7 +533,7 @@ async def entrypoint(ctx: JobContext):
     # just fine. Re-enable later if you choose to bake the model into the build.
     if False:  # was: if TURN_DETECTOR_AVAILABLE:
         session_kwargs["turn_detection"] = MultilingualModel()
-        logger.info("[nova-v200] turn detector enabled")
+        logger.info("[nova-v201] turn detector enabled")
 
     # Watch for ANY remote track arriving at the worker — confirms mic plumbing
     @ctx.room.on("track_subscribed")
@@ -530,7 +547,7 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"[MIC-IN] {participant.identity} published {kind} track")
 
     session = AgentSession(**session_kwargs)
-    logger.info("[nova-v200] step 1: AgentSession created")
+    logger.info("[nova-v201] step 1: AgentSession created")
 
     # ─────────────────────────────────────────────────────────────
     # HEAVY LOGGING HOOKS — distinct log line at each pipeline stage.
@@ -585,34 +602,48 @@ async def entrypoint(ctx: JobContext):
     try:
         runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
         await runway_avatar.start(session, room=ctx.room)
-        logger.info(f"[nova-v200] step 2: runway avatar started, id={avatar_id[:8]}")
+        logger.info(f"[nova-v201] step 2: runway avatar started, id={avatar_id[:8]}")
     except Exception as e:
-        logger.exception(f"[nova-v200] CRASH at runway start: {e}")
+        logger.exception(f"[nova-v201] CRASH at runway start: {e}")
         raise
 
     # The agent
     agent = NovaAgent(state)
-    logger.info("[nova-v200] step 3: NovaAgent created")
+    logger.info("[nova-v201] step 3: NovaAgent created")
 
     # Data channel listener BEFORE session starts (catch early events)
     register_data_handler(ctx.room, state, session, agent)
-    logger.info("[nova-v200] step 4: data handler registered")
+    logger.info("[nova-v201] step 4: data handler registered")
+
+    # Import RoomInputOptions for explicit subscribe config
+    from livekit.agents.voice.room_io import RoomInputOptions
 
     try:
         await session.start(
             agent=agent,
             room=ctx.room,
+            # CRITICAL: explicitly subscribe to standard participants (kids) for
+            # both audio AND text. Without this, in v1.5.16 the agent sometimes
+            # links to the wrong participant (the runway-avatar agent that joins
+            # the room) and never hears the kid. This was the real bug behind
+            # "Nova never replies to anything I say or type."
+            room_input_options=RoomInputOptions(
+                audio_enabled=True,
+                text_enabled=True,
+                video_enabled=False,
+                participant_kinds=[rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD],
+            ),
         )
-        logger.info("[nova-v200] step 5: session.start COMPLETE")
+        logger.info("[nova-v201] step 5: session.start COMPLETE (kid-audio + text subscribed)")
     except Exception as e:
-        logger.exception(f"[nova-v200] CRASH at session.start: {e}")
+        logger.exception(f"[nova-v201] CRASH at session.start: {e}")
         raise
 
-    logger.info("[nova-v200] step 6: pipeline ready, heavy logging active")
+    logger.info("[nova-v201] step 6: pipeline ready, heavy logging active")
 
     # GREETING — first words from OUR brain
     state.greeting_done = True
-    logger.info("[nova-v200] step 7: about to generate greeting...")
+    logger.info("[nova-v201] step 7: about to generate greeting...")
 
     if state.ctx.name and state.ctx.sessions_before > 0:
         greet_instructions = (
@@ -633,21 +664,21 @@ async def entrypoint(ctx: JobContext):
             session.generate_reply(instructions=greet_instructions),
             timeout=10.0,
         )
-        logger.info("[nova-v200] step 8: GREETING SENT SUCCESSFULLY (via LLM)")
+        logger.info("[nova-v201] step 8: GREETING SENT SUCCESSFULLY (via LLM)")
     except asyncio.TimeoutError:
-        logger.warning("[nova-v200] greeting LLM timed out → falling back to plain say()")
+        logger.warning("[nova-v201] greeting LLM timed out → falling back to plain say()")
         try:
             await session.say(fallback_greeting)
-            logger.info("[nova-v200] step 8: GREETING SENT (fallback)")
+            logger.info("[nova-v201] step 8: GREETING SENT (fallback)")
         except Exception as e2:
-            logger.error(f"[nova-v200] fallback greeting also failed: {e2}")
+            logger.error(f"[nova-v201] fallback greeting also failed: {e2}")
     except Exception as e:
-        logger.exception(f"[nova-v200] greeting failed (non-timeout): {e}")
+        logger.exception(f"[nova-v201] greeting failed (non-timeout): {e}")
         try:
             await session.say(fallback_greeting)
-            logger.info("[nova-v200] step 8: GREETING SENT (fallback after error)")
+            logger.info("[nova-v201] step 8: GREETING SENT (fallback after error)")
         except Exception as e2:
-            logger.error(f"[nova-v200] fallback greeting also failed: {e2}")
+            logger.error(f"[nova-v201] fallback greeting also failed: {e2}")
 
     # Kick off vision request in background
     asyncio.create_task(_vision_trigger_loop(ctx.room, state))
