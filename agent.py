@@ -507,9 +507,14 @@ async def entrypoint(ctx: JobContext):
     # Build session pipeline
     session_kwargs = dict(
         stt=deepgram.STT(
-            model="nova-3",
-            language="multi",
+            model=os.getenv("NOVA_STT_MODEL", "nova-3"),
+            # "multi" requires Deepgram multilingual streaming entitlement.
+            # If your account doesn't have it, STT silently produces nothing.
+            # en-US works on every plan, is faster, and is more accurate for English.
+            language=os.getenv("NOVA_STT_LANG", "en-US"),
             interim_results=True,
+            smart_format=True,
+            punctuate=True,
         ),
         llm=llm_instance,
         tts=elevenlabs.TTS(
@@ -564,10 +569,24 @@ async def entrypoint(ctx: JobContext):
         def _on_transcribed(ev):
             text = getattr(ev, "transcript", "") or getattr(ev, "text", "")
             is_final = getattr(ev, "is_final", True)
-            if is_final and text.strip():
-                logger.info(f"[HEAR] kid voice → '{text[:80]}'")
+            if not text.strip():
+                return
+            # Log BOTH interim and final so we can see Deepgram is alive at all
+            if is_final:
+                logger.info(f"[HEAR] final ✓ kid voice → '{text[:80]}'")
+            else:
+                logger.info(f"[HEAR] interim … '{text[:60]}'")
     except Exception as e:
         logger.warning(f"[hook] user_input_transcribed unavailable: {e}")
+
+    # Direct STT error visibility — if Deepgram is rejecting audio we'll see it
+    try:
+        @session.on("error")
+        def _on_session_error(ev):
+            err = getattr(ev, "error", None)
+            logger.error(f"[STT-OR-AGENT-ERROR] {err}")
+    except Exception:
+        pass
 
     try:
         @session.on("agent_state_changed")
