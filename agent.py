@@ -12,7 +12,7 @@ Architecture (Jun 3 2026):
                                                                        ▼
                                                               Nova's face lipsync
 
-Character: Nova is a FAIRY who just found this kid. Magical + curious vibe.
+Character: Nova is a warm American ~20yo dance friend. Cool-older-cousin energy.
 Soul lives in personality.py — three phase prompts (recognition / dance / goodbye).
 
 History of brain choices:
@@ -513,16 +513,15 @@ async def entrypoint(ctx: JobContext):
         ),
         llm=llm_instance,
         tts=elevenlabs.TTS(
-            # Lily (default): young, warm, kid-friendly — fits fairy vibe.
-            # Matilda was too adult/neutral. Switchable via env without code edit.
-            # Other voices to try: pFZP5JQG7iQjIQuC4Bku (Lily), XB0fDUnXU5powFXDhCwa (Charlotte)
-            voice_id=os.getenv("NOVA_VOICE_ID", "pFZP5JQG7iQjIQuC4Bku"),
-            model="eleven_flash_v2_5",
+            # FREYA: American young female (~20), bright/cheerful by default.
+            # Lily was British — wrong accent for our product. Aria/Bella as fallbacks.
+            voice_id=os.getenv("NOVA_VOICE_ID", "jsCqWAovK2LkecY7zXl4"),
+            model=os.getenv("NOVA_TTS_MODEL", "eleven_flash_v2_5"),
             voice_settings=elevenlabs.VoiceSettings(
-                # Cranked for expressiveness — fairy needs range, not flatness.
-                stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.35")),
-                similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.80")),
-                style=float(os.getenv("NOVA_VOICE_STYLE", "0.65")),
+                # Tuned: less stable (more aliveness), higher similarity (less distortion).
+                stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.25")),
+                similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.85")),
+                style=float(os.getenv("NOVA_VOICE_STYLE", "0.60")),
                 use_speaker_boost=True,
             ),
         ),
@@ -647,22 +646,26 @@ async def entrypoint(ctx: JobContext):
 
     if state.ctx.name and state.ctx.sessions_before > 0:
         greet_instructions = (
-            f"Greet {state.ctx.name} like a fairy who's been waiting. "
-            f"ONE breathless sentence. Use a *gasp* if it fits."
+            f"{state.ctx.name} just came back for another session. "
+            f"Greet warmly, like a friend. ONE short sentence using their name once."
         )
-        fallback_greeting = f"*gasp* — {state.ctx.name}! you found me again!"
+        fallback_greeting = f"hey {state.ctx.name}! you came back."
     else:
         greet_instructions = (
-            "You just appeared and met this kid. Be a curious fairy. "
-            "Tell them your name (Nova) and ask theirs ONCE."
+            "You just appeared. Greet the kid warmly, say your name is Nova, "
+            "ask their name. ONE short flowing sentence."
         )
-        fallback_greeting = "oh! — hi! — I'm Nova... who are you?"
+        fallback_greeting = "hey! I'm Nova... what's your name?"
 
     try:
         # 10s timeout — if generate_reply hangs (LLM timeout), don't kill the session
         await asyncio.wait_for(
             session.generate_reply(instructions=greet_instructions),
-            timeout=10.0,
+            # First OpenAI call from a fresh worker takes ~5-12s (TLS handshake
+            # + model warmup). 10s wasn't enough; we saw the fallback fire even
+            # on healthy sessions. 20s is comfortable without making the user wait
+            # forever if something is truly wrong.
+            timeout=20.0,
         )
         logger.info("[nova-v201] step 8: GREETING SENT SUCCESSFULLY (via LLM)")
     except asyncio.TimeoutError:
