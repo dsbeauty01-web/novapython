@@ -519,6 +519,11 @@ async def entrypoint(ctx: JobContext):
             model=os.getenv("NOVA_STT_MODEL", "gpt-4o-mini-transcribe"),
             language=os.getenv("NOVA_STT_LANG", "en"),
             api_key=openai_key,
+            # CRITICAL: enable realtime streaming. Without this, STT only
+            # transcribes ONCE per turn after VAD says the kid stopped talking
+            # — and if VAD never fires, no transcript ever appears (silent fail).
+            # Realtime mode streams interim + final transcripts continuously.
+            use_realtime=True,
         ),
         llm=llm_instance,
         tts=elevenlabs.TTS(
@@ -654,6 +659,10 @@ async def entrypoint(ctx: JobContext):
                 text_enabled=True,
                 video_enabled=False,
                 participant_kinds=[rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD],
+                # CRITICAL: default sample rate is 24000Hz but Whisper expects
+                # 16000Hz. Wrong rate = no transcripts (silent fail). This may
+                # also be why Deepgram silently produced nothing.
+                audio_sample_rate=16000,
             ),
         )
         logger.info("[nova-v201] step 5: session.start COMPLETE (kid-audio + text subscribed)")
