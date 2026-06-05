@@ -89,8 +89,10 @@ logging.basicConfig(level=logging.INFO)
 class PaceGate:
     """Lets Nova speak again once she's done — with a small safety floor."""
 
-    # Backup floor, in seconds. Dial it down at test time without code edits.
-    MIN_GAP_SEC = float(os.getenv("NOVA_MIN_GAP_SEC", "1.2"))
+    # Backup floor, in seconds. Was 1.2s but kid complained it felt slow.
+    # 0.3s = barely perceptible gap; Nova's natural speaking-state event
+    # already gates her from talking over herself.
+    MIN_GAP_SEC = float(os.getenv("NOVA_MIN_GAP_SEC", "0.3"))
 
     def __init__(self):
         self._last_spoke = 0.0
@@ -260,6 +262,12 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 if event.get("event") == "phase" and event.get("phase") == "goodbye":
                     asyncio.create_task(_speak_goodbye(session, state, agent))
 
+                # Phase transition to dance → fire hype intro line ("ready?")
+                # Worker generates ONE short line. This replaces the old
+                # browser-side fake "user-said" stage direction that leaked.
+                if event.get("event") == "phase" and event.get("phase") == "dance":
+                    asyncio.create_task(_speak_dance_intro(session, state, agent))
+
             elif kind == "vision-observation":
                 obs = msg.get("text", "").strip()
                 if obs and not state.vision_fired:
@@ -324,6 +332,21 @@ async def _react_to_event(session: AgentSession, state: NovaSessionState, agent:
         await session.generate_reply(instructions=instructions)
     except Exception as e:
         logger.error(f"[react] generate_reply failed: {e}")
+
+
+async def _speak_dance_intro(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
+    """Phase transitioned to dance — say ONE hype line over the countdown."""
+    await state.pace.acquire()
+    await agent.refresh_instructions()
+    instructions = (
+        "Kid just hit dance. Say ONE short hype line — 1 to 3 words only "
+        "(like 'ready?', 'okay let's go!', 'here we go!'). No questions. "
+        "Just a quick cheer."
+    )
+    try:
+        await session.generate_reply(instructions=instructions)
+    except Exception as e:
+        logger.error(f"[dance-intro] generate_reply failed: {e}")
 
 
 async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
