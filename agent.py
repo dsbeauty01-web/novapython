@@ -1,34 +1,46 @@
 """
-Nova v201 — LiveKit Agent worker (OpenAI brain · ElevenLabs Lily voice · Runway face)
+Nova v207 — LiveKit Agent worker (Loora-grade brain architecture)
 
-This is Nova's BRAIN. It owns every word she says.
+Brain = OpenAI gpt-4o-mini with FIVE-LAYER context prompts:
+  L1 IDENTITY        — locked persona (~500 tokens)
+  L2 KID PROFILE     — from memory.py (Postgres or RAM)
+  L3 KID KNOWLEDGE   — from knowledge.py (colors/animals/foods/etc.)
+  L4 SESSION STATE   — phase, music sec, recent events, message history
+  L5 PHASE PERSONA   — recognition / dance / goodbye
 
-Architecture (Jun 3 2026):
-    Kid voice ──► Deepgram STT ──► OpenAI gpt-4o-mini ──► ElevenLabs Lily TTS
-                                       (phase-aware prompt)            │
-                                                                       ▼
-                                                              Runway plugin
-                                                                       │
-                                                                       ▼
-                                                              Nova's face lipsync
+Reaction tiering (router in personality.reaction_tier):
+  Tier 1  phrase_bank — 80% of dance reactions, free, ~50ms
+  Tier 2  llm_micro   — milestone streaks (3,5,10), first_hit, ~500ms
+  Tier 3  llm_rich    — kid speech, goodbye, vision, ~700ms
 
-Character: Nova is a warm American ~20yo dance friend. Cool-older-cousin energy.
-Soul lives in personality.py — three phase prompts (recognition / dance / goodbye).
+Pipeline:
+    Kid voice (browser Web Speech API) ──► data channel ──► worker
+                                                                │
+                                                                ▼
+    OpenAI gpt-4o-mini ◄── 5-layer prompt ◄── personality.build_system_prompt()
+                                                                │
+                                                                ▼
+    text ──► ElevenLabs Freya TTS ──► Runway face lipsync ──► kid
+
+Memory (memory.py):
+  - Postgres if DATABASE_URL set on Render (persistent)
+  - RAM fallback otherwise (per-process)
+  - Per kid: name, sessions, streaks, shared_facts (pets/colors/etc.),
+    best_moments, message_history (last 12 turns), energy_read
+
+Character (personality.py):
+  Warm American ~20yo dance friend. Cool-older-cousin energy.
+  BANNED: "amazing", "awesome", "great job", baby-talk, fairy-isms.
+  Mandated: specific praise, mirror-and-echo, gentle correction.
 
 History of brain choices:
-- v113: Runway's hidden brain (broke character, abandoned)
-- v200 early: Anthropic Claude Haiku (timed out repeatedly under load)
-- v201 mid:   Gemini 2.5 Flash (blocked our fairy greeting as PROHIBITED_CONTENT
-              — Google's kids-safety classifier is too aggressive)
-- v201 now:   OpenAI gpt-4o-mini (industry-standard for kids apps: Loora, Speak)
+- v113: Runway's hidden brain (no control, abandoned)
+- v200: Anthropic Haiku (kept timing out)
+- v201: Gemini Flash (blocked content as PROHIBITED)
+- v202-206: OpenAI gpt-4o-mini (industry standard) + flat prompts
+- v207 now: OpenAI gpt-4o-mini + 5-layer prompts + tier router + knowledge base
 
-Key design decisions:
-- Phase switching: recognition → dance → goodbye (browser pushes via data channel)
-- Pacing: PaceGate keeps Nova from talking over herself (1.2s floor, smart wait)
-- Memory: in-memory MemoryStore per kid_id (within uptime; Postgres later)
-- Vision: Gemini Flash (separate path) for "she sees me" moment
-- Heavy logging: [HEAR]/[TYPE]/[BRAIN]/[SPEAK]/[PACKET]/[MIC-IN] tags so we
-  can pinpoint exactly where a session breaks.
+Heavy logging: [HEAR]/[TYPE]/[BRAIN]/[SPEAK]/[PACKET]/[MIC-IN]/[react/...] tags.
 """
 
 import os
@@ -69,7 +81,7 @@ import vision
 
 load_dotenv()
 
-logger = logging.getLogger("nova-v201")
+logger = logging.getLogger("nova-v207")
 logging.basicConfig(level=logging.INFO)
 
 
@@ -138,15 +150,23 @@ class NovaSessionState:
         self.vision_fired = False
         self.greeting_done = False
         self.session_started_at = time.time()
-        # If we have memory for this kid, prefill the context
+        # Load full kid profile from memory (Postgres or RAM)
         mem = memory.store.get(self.kid_id)
-        if mem.name:
-            self.ctx.name = mem.name
-            self.ctx.sessions_before = mem.total_sessions
-            self.ctx.max_streak = mem.max_streak
-            self.ctx.favorite_move = mem.favorite_move
-            if mem.best_moments:
-                self.ctx.best_moment = mem.best_moments[-1]
+        # Always copy what we have — even partial profile helps Nova
+        self.ctx.name = mem.name
+        self.ctx.sessions_before = mem.total_sessions
+        self.ctx.max_streak = mem.max_streak
+        self.ctx.favorite_move = mem.favorite_move
+        self.ctx.favorite_song = mem.favorite_song
+        self.ctx.shared_facts = dict(mem.shared_facts) if mem.shared_facts else {}
+        self.ctx.best_moments_history = list(mem.best_moments) if mem.best_moments else []
+        self.ctx.energy_read = mem.energy_read or "unknown"
+        self.ctx.message_history = list(mem.message_history) if mem.message_history else []
+        if mem.best_moments:
+            self.ctx.best_moment = mem.best_moments[-1]
+        logger.info(f"[memory] loaded kid={self.kid_id} name={mem.name} "
+                    f"sessions={mem.total_sessions} max_streak={mem.max_streak} "
+                    f"facts={len(mem.shared_facts)}")
 
     def push_event(self, event: dict):
         """Browser pushed a game event."""
@@ -319,19 +339,41 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
 # Reaction helpers
 # ────────────────────────────────────────────────────────────────────────
 async def _react_to_event(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
-    """Game event happened — generate phase-aware reaction."""
+    """Game event happened — pick tier (phrase bank vs LLM) for speed + cost."""
+    event_name = state.ctx.last_event or "hit"
+    tier = personality.reaction_tier(event_name, state.ctx.streak)
+
+    # Drop reaction entirely if Nova is still mid-speech — don't queue overlap.
+    # (Game cues fire fast; we'd rather skip than stack.)
+    if state.pace._is_speaking:
+        logger.info(f"[react] SKIP {event_name} (Nova still speaking)")
+        return
+
     await state.pace.acquire()
-    # Refresh prompt to current phase
     await agent.refresh_instructions()
+
+    if tier == "phrase_bank":
+        # Tier 1: instant, free, from PHRASE_BANKS
+        line = personality.pick_phrase(event_name, state.ctx.streak, state.ctx.name)
+        if not line:
+            return
+        try:
+            await session.say(line)
+            logger.info(f"[react/bank] {event_name} streak={state.ctx.streak} → '{line}'")
+        except Exception as e:
+            logger.error(f"[react/bank] say failed: {e}")
+        return
+
+    # Tier 2: short LLM call for milestones (streak 3, 5, 10) or first_hit
     instructions = (
-        f"React to game event '{state.ctx.last_event}'. "
-        f"Current streak: {state.ctx.streak}. "
-        f"Reply 1-6 words only. Follow your dance phase rules."
+        f"React to game event '{event_name}' with streak {state.ctx.streak}. "
+        f"1-6 WORDS ONLY. Follow dance-phase rules."
     )
     try:
         await session.generate_reply(instructions=instructions)
+        logger.info(f"[react/llm] {event_name} streak={state.ctx.streak}")
     except Exception as e:
-        logger.error(f"[react] generate_reply failed: {e}")
+        logger.error(f"[react/llm] generate_reply failed: {e}")
 
 
 async def _speak_dance_intro(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
@@ -405,16 +447,64 @@ async def _test_speak_with_overlay(session: AgentSession, state: NovaSessionStat
 
 
 async def _user_said(session: AgentSession, state: NovaSessionState, agent: "NovaAgent", text: str):
-    """Browser sent text-as-voice. Inject as user input so Nova replies naturally."""
+    """Kid spoke or typed. Inject as user input + extract knowledge + save to memory."""
     logger.info(f"[TYPE] kid typed → '{text[:80]}'")
+
+    # Update live context so next prompt build has the kid's words +
+    # knowledge.py can detect topic mentions (colors, animals, foods)
+    state.ctx.last_kid_text = text
+
+    # Persistent message history — survives across sessions if Postgres on
+    try:
+        memory.store.add_message(state.kid_id, "user", text)
+    except Exception as e:
+        logger.warning(f"[memory] add_message failed: {e}")
+
+    # Naive shared-fact harvest: catch common "my X is Y" patterns
+    # so Nova remembers "I have a cat named Mango" next session
+    _harvest_facts(state, text)
+
     await state.pace.acquire()
     await agent.refresh_instructions()
-    logger.info("[BRAIN] generating reply to typed input...")
+    logger.info("[BRAIN] generating reply to kid input...")
     try:
         await session.generate_reply(user_input=text)
         logger.info(f"[BRAIN] reply call returned for: '{text[:40]}'")
     except Exception as e:
-        logger.exception(f"[BRAIN] generate_reply FAILED for typed input: {e}")
+        logger.exception(f"[BRAIN] generate_reply FAILED for kid input: {e}")
+
+
+def _harvest_facts(state: NovaSessionState, text: str):
+    """Very lightweight pattern-match for facts kid shares.
+    Catches: 'my [thing] is [name]', 'I have a [pet]', 'I like [thing]'.
+    Real NLU would be a Tier-3 LLM call; this is the cheap version."""
+    import re
+    t = text.lower().strip()
+    patterns = [
+        (r"my\s+(?:name|cat|dog|pet|brother|sister|friend|mom|dad)\s+is\s+([a-z][a-z\-' ]{1,30})",
+         lambda m: ("relation_subject", m.group(0).strip())),
+        (r"i\s+(?:have|got)\s+a\s+([a-z][a-z\-' ]{1,30})", lambda m: ("has", m.group(1).strip())),
+        (r"i\s+(?:like|love)\s+([a-z][a-z\-' ]{1,30})", lambda m: ("likes", m.group(1).strip())),
+        (r"my\s+favorite\s+(?:color|food|song|move|animal)\s+is\s+([a-z][a-z\-' ]{1,30})",
+         lambda m: ("favorite", m.group(0).strip())),
+    ]
+    found = []
+    for pat, fn in patterns:
+        m = re.search(pat, t)
+        if m:
+            key, val = fn(m)
+            val = val.strip().rstrip(".!?,")
+            if 1 < len(val) < 40:
+                found.append((key, val))
+    if not found:
+        return
+    for key, val in found[:2]:
+        state.ctx.shared_facts[key] = val
+        try:
+            memory.store.add_shared_fact(state.kid_id, key, val)
+            logger.info(f"[fact] {state.kid_id}: {key}={val}")
+        except Exception as e:
+            logger.warning(f"[fact] save failed: {e}")
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -489,7 +579,7 @@ async def _vision_trigger_loop(room: rtc.Room, state: NovaSessionState):
 # Entrypoint — once per Runway session
 # ────────────────────────────────────────────────────────────────────────
 async def entrypoint(ctx: JobContext):
-    logger.info(f"[nova-v201] entrypoint room={ctx.room.name}")
+    logger.info(f"[nova-v207] entrypoint room={ctx.room.name}")
 
     kid_id = None
     try:
@@ -501,7 +591,7 @@ async def entrypoint(ctx: JobContext):
 
     state = NovaSessionState(kid_id=kid_id)
     logger.info(
-        f"[nova-v201] kid_id={state.kid_id} "
+        f"[nova-v207] kid_id={state.kid_id} "
         f"name={state.ctx.name} sessions_before={state.ctx.sessions_before}"
     )
 
@@ -517,7 +607,7 @@ async def entrypoint(ctx: JobContext):
     # ─────────────────────────────────────────────────────────────
     openai_key = os.getenv("OPENAI_API_KEY")
     if not openai_key:
-        logger.error("[nova-v201] FATAL: OPENAI_API_KEY missing on worker")
+        logger.error("[nova-v207] FATAL: OPENAI_API_KEY missing on worker")
         raise RuntimeError("OPENAI_API_KEY required — add it on Render → worker → Environment")
 
     llm_instance = openai_plugin.LLM(
@@ -525,7 +615,7 @@ async def entrypoint(ctx: JobContext):
         temperature=float(os.getenv("NOVA_TEMPERATURE", "0.85")),
         api_key=openai_key,
     )
-    logger.info(f"[nova-v201] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
+    logger.info(f"[nova-v207] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
 
     # Build session pipeline
     session_kwargs = dict(
@@ -569,7 +659,7 @@ async def entrypoint(ctx: JobContext):
     # just fine. Re-enable later if you choose to bake the model into the build.
     if False:  # was: if TURN_DETECTOR_AVAILABLE:
         session_kwargs["turn_detection"] = MultilingualModel()
-        logger.info("[nova-v201] turn detector enabled")
+        logger.info("[nova-v207] turn detector enabled")
 
     # Watch for ANY remote track arriving at the worker — confirms mic plumbing
     @ctx.room.on("track_subscribed")
@@ -583,7 +673,7 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"[MIC-IN] {participant.identity} published {kind} track")
 
     session = AgentSession(**session_kwargs)
-    logger.info("[nova-v201] step 1: AgentSession created")
+    logger.info("[nova-v207] step 1: AgentSession created")
 
     # ─────────────────────────────────────────────────────────────
     # HEAVY LOGGING HOOKS — distinct log line at each pipeline stage.
@@ -643,6 +733,11 @@ async def entrypoint(ctx: JobContext):
             txt = str(txt)[:140]
             if role == "assistant" and txt:
                 logger.info(f"[SPEAK] Nova said → '{txt}'")
+                # Save Nova's reply to history — multi-turn memory survives
+                try:
+                    memory.store.add_message(state.kid_id, "assistant", txt)
+                except Exception as e:
+                    logger.warning(f"[memory] add_message(assistant) failed: {e}")
             elif role == "user" and txt:
                 logger.info(f"[HEAR] confirmed user msg → '{txt}'")
     except Exception as e:
@@ -652,18 +747,18 @@ async def entrypoint(ctx: JobContext):
     try:
         runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
         await runway_avatar.start(session, room=ctx.room)
-        logger.info(f"[nova-v201] step 2: runway avatar started, id={avatar_id[:8]}")
+        logger.info(f"[nova-v207] step 2: runway avatar started, id={avatar_id[:8]}")
     except Exception as e:
-        logger.exception(f"[nova-v201] CRASH at runway start: {e}")
+        logger.exception(f"[nova-v207] CRASH at runway start: {e}")
         raise
 
     # The agent
     agent = NovaAgent(state)
-    logger.info("[nova-v201] step 3: NovaAgent created")
+    logger.info("[nova-v207] step 3: NovaAgent created")
 
     # Data channel listener BEFORE session starts (catch early events)
     register_data_handler(ctx.room, state, session, agent)
-    logger.info("[nova-v201] step 4: data handler registered")
+    logger.info("[nova-v207] step 4: data handler registered")
 
     # Import RoomInputOptions for explicit subscribe config
     from livekit.agents.voice.room_io import RoomInputOptions
@@ -688,16 +783,16 @@ async def entrypoint(ctx: JobContext):
                 audio_sample_rate=16000,
             ),
         )
-        logger.info("[nova-v201] step 5: session.start COMPLETE (kid-audio + text subscribed)")
+        logger.info("[nova-v207] step 5: session.start COMPLETE (kid-audio + text subscribed)")
     except Exception as e:
-        logger.exception(f"[nova-v201] CRASH at session.start: {e}")
+        logger.exception(f"[nova-v207] CRASH at session.start: {e}")
         raise
 
-    logger.info("[nova-v201] step 6: pipeline ready, heavy logging active")
+    logger.info("[nova-v207] step 6: pipeline ready, heavy logging active")
 
     # GREETING — first words from OUR brain
     state.greeting_done = True
-    logger.info("[nova-v201] step 7: about to generate greeting...")
+    logger.info("[nova-v207] step 7: about to generate greeting...")
 
     if state.ctx.name and state.ctx.sessions_before > 0:
         greet_instructions = (
@@ -722,21 +817,21 @@ async def entrypoint(ctx: JobContext):
             # forever if something is truly wrong.
             timeout=20.0,
         )
-        logger.info("[nova-v201] step 8: GREETING SENT SUCCESSFULLY (via LLM)")
+        logger.info("[nova-v207] step 8: GREETING SENT SUCCESSFULLY (via LLM)")
     except asyncio.TimeoutError:
-        logger.warning("[nova-v201] greeting LLM timed out → falling back to plain say()")
+        logger.warning("[nova-v207] greeting LLM timed out → falling back to plain say()")
         try:
             await session.say(fallback_greeting)
-            logger.info("[nova-v201] step 8: GREETING SENT (fallback)")
+            logger.info("[nova-v207] step 8: GREETING SENT (fallback)")
         except Exception as e2:
-            logger.error(f"[nova-v201] fallback greeting also failed: {e2}")
+            logger.error(f"[nova-v207] fallback greeting also failed: {e2}")
     except Exception as e:
-        logger.exception(f"[nova-v201] greeting failed (non-timeout): {e}")
+        logger.exception(f"[nova-v207] greeting failed (non-timeout): {e}")
         try:
             await session.say(fallback_greeting)
-            logger.info("[nova-v201] step 8: GREETING SENT (fallback after error)")
+            logger.info("[nova-v207] step 8: GREETING SENT (fallback after error)")
         except Exception as e2:
-            logger.error(f"[nova-v201] fallback greeting also failed: {e2}")
+            logger.error(f"[nova-v207] fallback greeting also failed: {e2}")
 
     # Kick off vision request in background
     asyncio.create_task(_vision_trigger_loop(ctx.room, state))
