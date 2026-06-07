@@ -1,11 +1,14 @@
-# Nova v200 — Python LiveKit Agents + Runway plugin
-# Complete deps for Days 1-5.
+# Nova v207 — Python LiveKit Agents + Runway plugin + Postgres memory
+# Loora-grade brain architecture (Jun 5 2026)
 
 # Core LiveKit Agents framework + plugins
 livekit-agents[runway,deepgram,elevenlabs,openai,silero,turn-detector]>=1.5.0,<2.0.0
 
-# Gemini Flash for vision (Day 4 — "she sees me")
+# Gemini Flash for vision ("she sees me" moment, separate from brain)
 google-generativeai>=0.8.0
+
+# Postgres for persistent kid memory across deploys (optional — falls back to RAM if no DATABASE_URL)
+psycopg2-binary>=2.9.9
 
 # FastAPI HTTP server
 fastapi>=0.115.0
