@@ -640,15 +640,19 @@ async def entrypoint(ctx: JobContext):
         ),
         llm=llm_instance,
         tts=elevenlabs.TTS(
-            # FREYA: American young female (~20), bright/cheerful by default.
-            # Lily was British — wrong accent for our product. Aria/Bella as fallbacks.
+            # FREYA — American 20yo female, bright/cheerful.
+            # Voice tuning (v208 "smile in voice" tuning, Jun 7 2026):
+            #   stability LOWER  → more variation, expression, less monotone
+            #   style     HIGHER → more emotion, "smile" comes through
+            #   model     v2     → multilingual_v2 = more expressive than flash
+            #                       (Flash is ~2x faster but flatter — we
+            #                       trade ~200ms for warmth)
             voice_id=os.getenv("NOVA_VOICE_ID", "jsCqWAovK2LkecY7zXl4"),
-            model=os.getenv("NOVA_TTS_MODEL", "eleven_flash_v2_5"),
+            model=os.getenv("NOVA_TTS_MODEL", "eleven_multilingual_v2"),
             voice_settings=elevenlabs.VoiceSettings(
-                # Tuned: less stable (more aliveness), higher similarity (less distortion).
-                stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.25")),
+                stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.20")),
                 similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.85")),
-                style=float(os.getenv("NOVA_VOICE_STYLE", "0.60")),
+                style=float(os.getenv("NOVA_VOICE_STYLE", "0.85")),
                 use_speaker_boost=True,
             ),
         ),
@@ -797,15 +801,17 @@ async def entrypoint(ctx: JobContext):
     if state.ctx.name and state.ctx.sessions_before > 0:
         greet_instructions = (
             f"{state.ctx.name} just came back for another session. "
-            f"Greet warmly, like a friend. ONE short sentence using their name once."
+            f"Greet with REAL warmth — like a friend you missed seeing. "
+            f"Use their name ONCE, lit up. ONE short sentence ending in ! or ?."
         )
-        fallback_greeting = f"hey {state.ctx.name}! you came back."
+        fallback_greeting = f"ohh — {state.ctx.name}! you're back!"
     else:
         greet_instructions = (
             "You just appeared. Greet the kid warmly, say your name is Nova, "
-            "ask their name. ONE short flowing sentence."
+            "ask their name. ONE short flowing sentence with smile-energy "
+            "(ohh, hey, !'s welcome). End with the question."
         )
-        fallback_greeting = "hey! I'm Nova... what's your name?"
+        fallback_greeting = "hey! ohh I'm Nova — what's your name?"
 
     try:
         # 10s timeout — if generate_reply hangs (LLM timeout), don't kill the session
