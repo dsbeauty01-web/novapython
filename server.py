@@ -83,6 +83,12 @@ async def health():
 @app.get("/v2/diag")
 async def diag():
     """Diagnostic info for the test page — keys + recent activity."""
+    # A flaky memory backend must never take down the diagnostics panel.
+    try:
+        total_kids = len(memory.store.all_kids())
+    except Exception as e:
+        logger.warning(f"[diag] all_kids() failed: {e}")
+        total_kids = f"err: {e}"
     return {
         "ok": True,
         "service": "nova-v200-api",
@@ -96,7 +102,7 @@ async def diag():
             "GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
             "RUNWAYML_API_SECRET": bool(os.getenv("RUNWAYML_API_SECRET")),
         },
-        "total_kids": len(memory.store.all_kids()),
+        "total_kids": total_kids,
     }
 
 

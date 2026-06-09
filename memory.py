@@ -89,6 +89,10 @@ class _RAMStore:
             mem.last_seen = time.time()
             self._data[mem.kid_id] = mem
 
+    def all_kids(self) -> list:
+        with self._lock:
+            return list(self._data.keys())
+
 
 # ════════════════════════════════════════════════════════════════
 # POSTGRES STORE (used if DATABASE_URL env var is set)
@@ -185,6 +189,11 @@ class _PostgresStore:
             ))
             c.commit()
 
+    def all_kids(self) -> list:
+        with self._conn() as c, c.cursor() as cur:
+            cur.execute("SELECT kid_id FROM kids")
+            return [r[0] for r in cur.fetchall()]
+
 
 # ════════════════════════════════════════════════════════════════
 # PUBLIC API — uniform regardless of backend
@@ -251,6 +260,10 @@ class MemoryStore:
             if streak > mem.max_streak:
                 mem.max_streak = streak
                 self.save(mem)
+
+    def all_kids(self) -> list:
+        with self._lock:
+            return self._backend.all_kids()
 
 
 # Module singleton
