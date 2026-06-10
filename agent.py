@@ -43,6 +43,18 @@ History of brain choices:
 Heavy logging: [HEAR]/[TYPE]/[BRAIN]/[SPEAK]/[PACKET]/[MIC-IN]/[react/...] tags.
 """
 
+# ══════════════════════════════════════════════════════════════════════
+# v225 — VOICE LATENCY TUNING (live-entertainment feel)
+#
+# Optimized for ~400ms response: Silero VAD trimmed (0.4s silence), VAD
+# turn-detection (not semantic), interruptions on, ElevenLabs Flash v2.5
+# streaming TTS (fast first byte), and short dance-phase replies (max 80
+# tokens). The avatar lipsync may lag the audio slightly — that drift is
+# ACCEPTABLE for fast-paced kid interaction, where snappy back-and-forth
+# beats perfect mouth-sync. Warmth still lands via personality.py phrasing
+# and the voice settings (stability 0.20 / style 0.85), not the TTS model.
+# ══════════════════════════════════════════════════════════════════════
+
 import os
 import json
 import time
@@ -614,6 +626,13 @@ async def entrypoint(ctx: JobContext):
         model=os.getenv("NOVA_OPENAI_MODEL", "gpt-4o-mini"),
         temperature=float(os.getenv("NOVA_TEMPERATURE", "0.85")),
         api_key=openai_key,
+        # v225: cap reply length for speed. The latency pass asked for ~80-token
+        # dance-phase replies; this codebase shares ONE LLM across all phases and
+        # every Nova line is short by design (greeting/goodbye/reactions are 1-2
+        # sentences), so an 80-token ceiling speeds replies without truncating
+        # anything. NOTE: the livekit-openai kwarg is `max_completion_tokens`
+        # (not `max_tokens`). Env-overridable via NOVA_MAX_TOKENS.
+        max_completion_tokens=int(os.getenv("NOVA_MAX_TOKENS", "80")),
     )
     logger.info(f"[nova-v207] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
 
@@ -641,14 +660,15 @@ async def entrypoint(ctx: JobContext):
         llm=llm_instance,
         tts=elevenlabs.TTS(
             # FREYA — American 20yo female, bright/cheerful.
-            # Voice tuning (v208 "smile in voice" tuning, Jun 7 2026):
-            #   stability LOWER  → more variation, expression, less monotone
-            #   style     HIGHER → more emotion, "smile" comes through
-            #   model     v2     → multilingual_v2 = more expressive than flash
-            #                       (Flash is ~2x faster but flatter — we
-            #                       trade ~200ms for warmth)
+            # Voice tuning: stability LOWER → more expression; style HIGHER →
+            # more "smile". Kept at stability 0.20 / style 0.85 (see below).
+            #   model — v225: switched multilingual_v2 → flash_v2_5 for SPEED.
+            #   Flash v2.5 has a much faster first byte (~200ms quicker), which is
+            #   the whole point of the v225 latency pass. We trade a little model
+            #   warmth for snappier replies; the voice_settings below keep Nova
+            #   warm enough for fast-paced kid back-and-forth.
             voice_id=os.getenv("NOVA_VOICE_ID", "jsCqWAovK2LkecY7zXl4"),
-            model=os.getenv("NOVA_TTS_MODEL", "eleven_multilingual_v2"),
+            model=os.getenv("NOVA_TTS_MODEL", "eleven_flash_v2_5"),
             voice_settings=elevenlabs.VoiceSettings(
                 stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.20")),
                 similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.85")),
@@ -656,7 +676,19 @@ async def entrypoint(ctx: JobContext):
                 use_speaker_boost=True,
             ),
         ),
-        vad=silero.VAD.load(),
+        vad=silero.VAD.load(
+            # v225: trimmed for snappy turn-taking. 0.4s of silence ends a turn
+            # (was the ~0.55 default), 0.05s min speech, 0.2s prefix padding.
+            min_speech_duration=0.05,
+            min_silence_duration=0.4,
+            prefix_padding_duration=0.2,
+            activation_threshold=0.5,
+        ),
+        # v225: VAD-based turn detection (no semantic model file needed), let the
+        # kid barge in over Nova, and count just 0.4s of speech as an interruption.
+        turn_detection="vad",
+        allow_interruptions=True,
+        min_interruption_duration=0.4,
     )
     # Turn-detector disabled: its model file (model_q8.onnx) wasn't available
     # in this environment. Silero VAD (already configured) handles turn-taking
