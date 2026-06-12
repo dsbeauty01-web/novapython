@@ -626,13 +626,12 @@ async def entrypoint(ctx: JobContext):
         model=os.getenv("NOVA_OPENAI_MODEL", "gpt-4o-mini"),
         temperature=float(os.getenv("NOVA_TEMPERATURE", "0.85")),
         api_key=openai_key,
-        # v225: cap reply length for speed. The latency pass asked for ~80-token
-        # dance-phase replies; this codebase shares ONE LLM across all phases and
-        # every Nova line is short by design (greeting/goodbye/reactions are 1-2
-        # sentences), so an 80-token ceiling speeds replies without truncating
-        # anything. NOTE: the livekit-openai kwarg is `max_completion_tokens`
-        # (not `max_tokens`). Env-overridable via NOVA_MAX_TOKENS.
-        max_completion_tokens=int(os.getenv("NOVA_MAX_TOKENS", "80")),
+        # v225-fix: REMOVED `max_completion_tokens=...` here. That kwarg is not
+        # accepted by this pinned livekit-plugins-openai version, so constructing
+        # the LLM raised TypeError on worker boot → the "nova" agent never joined
+        # the room → Nova "did not connect" on every frontend. Replies are short
+        # by design anyway, so dropping the hard cap costs little. (If you want a
+        # token cap later, set it per-request, not on the constructor.)
     )
     logger.info(f"[nova-v207] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
 
