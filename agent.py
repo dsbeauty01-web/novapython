@@ -659,15 +659,15 @@ async def entrypoint(ctx: JobContext):
         llm=llm_instance,
         tts=elevenlabs.TTS(
             # FREYA — American 20yo female, bright/cheerful.
-            # Voice tuning: stability LOWER → more expression; style HIGHER →
-            # more "smile". Kept at stability 0.20 / style 0.85 (see below).
-            #   model — v225: switched multilingual_v2 → flash_v2_5 for SPEED.
-            #   Flash v2.5 has a much faster first byte (~200ms quicker), which is
-            #   the whole point of the v225 latency pass. We trade a little model
-            #   warmth for snappier replies; the voice_settings below keep Nova
-            #   warm enough for fast-paced kid back-and-forth.
+            # Voice tuning (v208 "smile in voice", Jun 7 2026):
+            #   stability LOWER  → more variation, expression, less monotone
+            #   style     HIGHER → more emotion, "smile" comes through
+            #   model     v2     → multilingual_v2 = more expressive than flash
+            # NOTE: v225 switched this to eleven_flash_v2_5 for speed, but it made
+            # Nova sound too fast / wrong — REVERTED to multilingual_v2. Only the
+            # voice model was reverted; all VAD/interruption/latency tuning stays.
             voice_id=os.getenv("NOVA_VOICE_ID", "jsCqWAovK2LkecY7zXl4"),
-            model=os.getenv("NOVA_TTS_MODEL", "eleven_flash_v2_5"),
+            model=os.getenv("NOVA_TTS_MODEL", "eleven_multilingual_v2"),
             voice_settings=elevenlabs.VoiceSettings(
                 stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.20")),
                 similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.85")),
