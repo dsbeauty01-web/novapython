@@ -455,6 +455,23 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     logger.info(f"[chat] user-said: '{text[:80]}'")
                     asyncio.create_task(_user_said(session, state, agent, text))
 
+            elif kind == "client-log":
+                # Browser telemetry batch — print each entry so the full session
+                # (client + server) lands in ONE log stream, correlated by time.
+                try:
+                    for ev in (msg.get("events") or [])[:60]:
+                        t = ev.get("t"); tag = ev.get("tag"); m = str(ev.get("msg", ""))[:180]
+                        d = ev.get("data")
+                        extra = ""
+                        if d:
+                            try:
+                                extra = " " + json.dumps(d)[:220]
+                            except Exception:
+                                extra = ""
+                        logger.info(f"[CLIENT] t={t} [{tag}] {m}{extra}")
+                except Exception as e:
+                    logger.error(f"[client-log] handler error: {e}")
+
         except Exception as e:
             logger.error(f"[data] parse error: {e}")
 
