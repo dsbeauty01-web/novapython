@@ -806,20 +806,17 @@ async def entrypoint(ctx: JobContext):
         ),
         llm=llm_instance,
         tts=elevenlabs.TTS(
-            # FREYA — American 20yo female, bright/cheerful.
-            # Voice tuning (v208 "smile in voice", Jun 7 2026):
-            #   stability LOWER  → more variation, expression, less monotone
-            #   style     HIGHER → more emotion, "smile" comes through
-            #   model     v2     → multilingual_v2 = more expressive than flash
-            # NOTE: v225 switched this to eleven_flash_v2_5 for speed, but it made
-            # Nova sound too fast / wrong — REVERTED to multilingual_v2. Only the
-            # voice model was reverted; all VAD/interruption/latency tuning stays.
-            voice_id=os.getenv("NOVA_VOICE_ID", "jsCqWAovK2LkecY7zXl4"),
-            model=os.getenv("NOVA_TTS_MODEL", "eleven_multilingual_v2"),
+            # MATILDA — warm female, kid-friendly (rebuild sprint, replaces Freya).
+            # model eleven_flash_v2_5: Nova is English-only; Flash ~75ms TTFA vs
+            #   500-800ms for multilingual_v2.
+            # settings: stability 0.50 (steadier; was 0.20 erratic),
+            #   style 0.40 (less theatrical; was 0.85).
+            voice_id=os.getenv("NOVA_VOICE_ID", "XrExE9yKIg1WjnnlVkGX"),
+            model=os.getenv("NOVA_TTS_MODEL", "eleven_flash_v2_5"),
             voice_settings=elevenlabs.VoiceSettings(
-                stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.20")),
+                stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.50")),
                 similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.85")),
-                style=float(os.getenv("NOVA_VOICE_STYLE", "0.85")),
+                style=float(os.getenv("NOVA_VOICE_STYLE", "0.40")),
                 use_speaker_boost=True,
             ),
         ),
@@ -990,46 +987,19 @@ async def entrypoint(ctx: JobContext):
     state.greeting_done = True
     logger.info("[nova-v207] step 7: about to generate greeting...")
 
+    # Rebuild sprint: HARDCODED first greeting — no LLM wait at session start
+    # (saves ~2-3s, consistent first impression). The LLM drives every reply
+    # AFTER this opening line.
     if state.ctx.name and state.ctx.sessions_before > 0:
-        greet_instructions = (
-            f"{state.ctx.name} just came back for another session. "
-            f"Greet with REAL warmth — like a friend you missed seeing. "
-            f"Use their name ONCE, lit up. ONE short sentence ending in ! or ?."
-        )
-        fallback_greeting = f"ohh — {state.ctx.name}! you're back!"
+        first_line = f"Ohh — {state.ctx.name}! You're back!"
     else:
-        greet_instructions = (
-            "You just appeared. Greet the kid warmly, say your name is Nova, "
-            "ask their name. ONE short flowing sentence with smile-energy "
-            "(ohh, hey, !'s welcome). End with the question."
-        )
-        fallback_greeting = "hey! ohh I'm Nova — what's your name?"
+        first_line = "Ohh hi! I'm Nova! What's your name?"
 
     try:
-        # 10s timeout — if generate_reply hangs (LLM timeout), don't kill the session
-        await asyncio.wait_for(
-            session.generate_reply(instructions=greet_instructions),
-            # First OpenAI call from a fresh worker takes ~5-12s (TLS handshake
-            # + model warmup). 10s wasn't enough; we saw the fallback fire even
-            # on healthy sessions. 20s is comfortable without making the user wait
-            # forever if something is truly wrong.
-            timeout=20.0,
-        )
-        logger.info("[nova-v207] step 8: GREETING SENT SUCCESSFULLY (via LLM)")
-    except asyncio.TimeoutError:
-        logger.warning("[nova-v207] greeting LLM timed out → falling back to plain say()")
-        try:
-            await session.say(fallback_greeting)
-            logger.info("[nova-v207] step 8: GREETING SENT (fallback)")
-        except Exception as e2:
-            logger.error(f"[nova-v207] fallback greeting also failed: {e2}")
+        await session.say(first_line)
+        logger.info(f"[nova-v207] step 8: GREETING SENT (hardcoded): '{first_line}'")
     except Exception as e:
-        logger.exception(f"[nova-v207] greeting failed (non-timeout): {e}")
-        try:
-            await session.say(fallback_greeting)
-            logger.info("[nova-v207] step 8: GREETING SENT (fallback after error)")
-        except Exception as e2:
-            logger.error(f"[nova-v207] fallback greeting also failed: {e2}")
+        logger.error(f"[nova-v207] hardcoded greeting failed: {e}")
 
     # Kick off vision request in background
     asyncio.create_task(_vision_trigger_loop(ctx.room, state))
