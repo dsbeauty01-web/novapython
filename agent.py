@@ -207,6 +207,35 @@ class FillerPlayer:
 #    where Runway ran its own brain. That setup is gone — Runway is now just a
 #    mouth — so the floor can be much lower.)
 # ────────────────────────────────────────────────────────────────────────
+def _voice_settings():
+    """Build ElevenLabs VoiceSettings, including `speed` if the installed plugin
+    supports it. Older plugin versions lack the field — omit rather than crash."""
+    base = dict(
+        stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.65")),
+        similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.90")),
+        style=float(os.getenv("NOVA_VOICE_STYLE", "0.30")),
+        use_speaker_boost=True,
+    )
+    speed = float(os.getenv("NOVA_VOICE_SPEED", "0.92"))
+    try:
+        vs = elevenlabs.VoiceSettings(**base, speed=speed)
+        logger.info(f"[nova-v207] VoiceSettings: speed={speed} SUPPORTED by plugin")
+        return vs
+    except TypeError:
+        logger.warning("[nova-v207] VoiceSettings has NO 'speed' field — omitted (plugin too old)")
+        return elevenlabs.VoiceSettings(**base)
+
+
+def _inject_pauses(s):
+    """Insert '...' micro-pauses after , ! ? so Nova sounds thoughtful, not blurted.
+    Pure string ops (no regex import); safe on streamed chunks."""
+    if not s:
+        return s
+    for p in ("! ", "? ", ", "):
+        s = s.replace(p, p[0] + "... ")
+    return s
+
+
 class PaceGate:
     """Lets Nova speak again once she's done — with a small safety floor."""
 
@@ -364,6 +393,24 @@ class NovaAgent(Agent):
         """Rebuild instructions based on current state (called each turn)."""
         new_prompt = self.state.system_prompt()
         await self.update_instructions(new_prompt)
+
+    async def tts_node(self, text, model_settings):
+        """Inject '...' micro-pauses into EVERY spoken line before TTS, so Nova
+        sounds thoughtful. Falls back to the raw text stream on any error so it
+        can never break her voice."""
+        async def _paused():
+            async for chunk in text:
+                try:
+                    yield _inject_pauses(chunk)
+                except Exception:
+                    yield chunk
+        source = text
+        try:
+            source = _paused()
+        except Exception:
+            source = text
+        async for frame in Agent.default.tts_node(self, source, model_settings):
+            yield frame
 
     async def on_user_turn_completed(self, chat_ctx, new_message):
         """Hook fired when kid finishes speaking (STT final). Fire an instant
@@ -784,12 +831,14 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"[nova-v207] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
     # Runtime proof of the resolved voice config (env overrides default if set)
     logger.info(
-        "[nova-v207] TTS RUNTIME = model=%s voice=%s stability=%s style=%s"
+        "[nova-v207] TTS RUNTIME = model=%s voice=%s stability=%s similarity=%s style=%s speed=%s"
         % (
             os.getenv("NOVA_TTS_MODEL", "eleven_flash_v2_5"),
-            os.getenv("NOVA_VOICE_ID", "XrExE9yKIg1WjnnlVkGX"),
-            os.getenv("NOVA_VOICE_STABILITY", "0.50"),
-            os.getenv("NOVA_VOICE_STYLE", "0.40"),
+            os.getenv("NOVA_VOICE_ID", "P6xfJudBtfcB1BM5ZWR7"),
+            os.getenv("NOVA_VOICE_STABILITY", "0.65"),
+            os.getenv("NOVA_VOICE_SIMILARITY", "0.90"),
+            os.getenv("NOVA_VOICE_STYLE", "0.30"),
+            os.getenv("NOVA_VOICE_SPEED", "0.92"),
         )
     )
 
@@ -816,19 +865,14 @@ async def entrypoint(ctx: JobContext):
         ),
         llm=llm_instance,
         tts=elevenlabs.TTS(
-            # MATILDA — warm female, kid-friendly (rebuild sprint, replaces Freya).
-            # model eleven_flash_v2_5: Nova is English-only; Flash ~75ms TTFA vs
-            #   500-800ms for multilingual_v2.
-            # settings: stability 0.50 (steadier; was 0.20 erratic),
-            #   style 0.40 (less theatrical; was 0.85).
-            voice_id=os.getenv("NOVA_VOICE_ID", "XrExE9yKIg1WjnnlVkGX"),
+            # LOORA1 (cloned voice P6xfJudBtfcB1BM5ZWR7) — kid-warm presence.
+            # model eleven_flash_v2_5 — verified working with this voice.
+            # settings (see _voice_settings): stability 0.65 (calmer), similarity
+            #   0.90 (locks character), style 0.30 (natural), speed 0.92 (8% slower,
+            #   kid pace) when the installed plugin supports speed.
+            voice_id=os.getenv("NOVA_VOICE_ID", "P6xfJudBtfcB1BM5ZWR7"),
             model=os.getenv("NOVA_TTS_MODEL", "eleven_flash_v2_5"),
-            voice_settings=elevenlabs.VoiceSettings(
-                stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.50")),
-                similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.85")),
-                style=float(os.getenv("NOVA_VOICE_STYLE", "0.40")),
-                use_speaker_boost=True,
-            ),
+            voice_settings=_voice_settings(),
         ),
         vad=silero.VAD.load(
             # v225: trimmed for snappy turn-taking. 0.4s of silence ends a turn
@@ -1001,9 +1045,9 @@ async def entrypoint(ctx: JobContext):
     # (saves ~2-3s, consistent first impression). The LLM drives every reply
     # AFTER this opening line.
     if state.ctx.name and state.ctx.sessions_before > 0:
-        first_line = f"Ohh — {state.ctx.name}! You're back!"
+        first_line = f"Ohh — {state.ctx.name}! ...you're back!"
     else:
-        first_line = "Ohh hi! I'm Nova! What's your name?"
+        first_line = "Ohh... hi! I'm Nova... what's your name?"
 
     try:
         await session.say(first_line)
