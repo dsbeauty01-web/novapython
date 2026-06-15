@@ -58,6 +58,8 @@ Heavy logging: [HEAR]/[TYPE]/[BRAIN]/[SPEAK]/[PACKET]/[MIC-IN]/[react/...] tags.
 import os
 import json
 import time
+import wave
+import random
 import asyncio
 import logging
 from typing import Optional
@@ -95,6 +97,101 @@ load_dotenv()
 
 logger = logging.getLogger("nova-v207")
 logging.basicConfig(level=logging.INFO)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# PRE-CACHED FILLER SYSTEM — perceived-magic latency win.
+#
+# On STT-final we instantly play ONE tiny pre-generated clip ("ooh!", "yes!",
+# "lightning!"…) through Nova's avatar while the real LLM reply is produced; the
+# real reply then plays right after, so the kid feels an instant reaction.
+#
+# Clips: audio/fillers/*.wav (24kHz mono PCM) — decoded with the stdlib `wave`
+# module so NO extra dependency / build step is needed. FULLY FAIL-SAFE: any
+# error loads/plays disables fillers and never touches the real-reply path.
+# ──────────────────────────────────────────────────────────────────────
+FILLER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio", "fillers")
+FILLER_NAMES = ["ooh", "yes", "wait", "woohoo", "hmm", "boom", "almost", "lightning"]
+
+
+class FillerPlayer:
+    GAP_SEC = 2.0          # min seconds between fillers (no chaos)
+    MIN_TEXT_CHARS = 3     # skip very short utterances
+
+    _clips = None          # class-level cache: name -> (pcm_bytes, rate, channels)
+
+    @classmethod
+    def _load_clips(cls):
+        if cls._clips is not None:
+            return
+        cls._clips = {}
+        for n in FILLER_NAMES:
+            p = os.path.join(FILLER_DIR, n + ".wav")
+            try:
+                if os.path.exists(p):
+                    with wave.open(p, "rb") as w:
+                        cls._clips[n] = (
+                            w.readframes(w.getnframes()),
+                            w.getframerate(),
+                            w.getnchannels(),
+                        )
+            except Exception as e:
+                logger.error(f"[filler] failed to load {n}.wav: {e}")
+        logger.info(f"[filler] loaded {len(cls._clips)} clips from {FILLER_DIR}")
+
+    def __init__(self):
+        try:
+            self._load_clips()
+        except Exception as e:
+            logger.error(f"[filler] _load_clips crashed, disabling: {e}")
+        self.last_name = None
+        self.last_fire = 0.0
+        self.enabled = bool(type(self)._clips)
+
+    def _pick(self):
+        names = [n for n in self._clips if n != self.last_name] or list(self._clips)
+        return random.choice(names)
+
+    async def _frames(self, pcm, rate, ch):
+        spc = max(1, rate // 100)      # 10ms worth of samples
+        cb = spc * ch * 2              # bytes per 10ms frame (16-bit)
+        for i in range(0, len(pcm), cb):
+            chunk = pcm[i:i + cb]
+            if len(chunk) < cb:
+                chunk = chunk + b"\x00" * (cb - len(chunk))
+            yield rtc.AudioFrame(
+                data=chunk, sample_rate=rate, num_channels=ch,
+                samples_per_channel=len(chunk) // (ch * 2),
+            )
+
+    def should_fire(self, text, is_speaking):
+        if not self.enabled:
+            return False
+        if is_speaking:                                       # Nova already talking
+            return False
+        if text is not None and len(text.strip()) < self.MIN_TEXT_CHARS:
+            return False
+        if time.time() - self.last_fire < self.GAP_SEC:       # too soon
+            return False
+        return True
+
+    async def fire(self, session, text):
+        """Play one filler clip. Fully isolated — never raises into the turn."""
+        try:
+            name = self._pick()
+            self.last_name = name
+            self.last_fire = time.time()
+            logger.info(f"[filler] CHOSE '{name}' t={self.last_fire:.3f} user='{(text or '')[:30]}'")
+            pcm, rate, ch = self._clips[name]
+            logger.info(f"[filler] PLAYING '{name}' (real LLM reply being produced in parallel)")
+            await session.say(
+                name, audio=self._frames(pcm, rate, ch),
+                add_to_chat_ctx=False, allow_interruptions=False,
+            )
+            logger.info(f"[filler] DONE '{name}'")
+        except Exception as e:
+            logger.error(f"[filler] play failed -> disabling fillers for safety: {e}")
+            self.enabled = False
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -259,7 +356,22 @@ class NovaAgent(Agent):
         await self.update_instructions(new_prompt)
 
     async def on_user_turn_completed(self, chat_ctx, new_message):
-        """Hook fired when kid finishes speaking. Refresh prompt + pace."""
+        """Hook fired when kid finishes speaking (STT final). Fire an instant
+        pre-cached filler while the real reply is produced, then refresh + pace."""
+        try:
+            fp = getattr(self.state, "filler", None)
+            sess = getattr(self.state, "session", None)
+            if fp and sess:
+                txt = None
+                try:
+                    tc = getattr(new_message, "text_content", None)
+                    txt = tc() if callable(tc) else tc
+                except Exception:
+                    txt = None
+                if fp.should_fire(txt, self.state.pace._is_speaking):
+                    asyncio.create_task(fp.fire(sess, txt))
+        except Exception as e:
+            logger.error(f"[filler] turn hook error: {e}")
         await self.refresh_instructions()
         await self.state.pace.acquire()
 
@@ -476,6 +588,13 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     # so Nova remembers "I have a cat named Mango" next session
     _harvest_facts(state, text)
 
+    # FILLER: instant reaction while the real reply is produced (typed path)
+    try:
+        fp = getattr(state, "filler", None)
+        if fp and fp.should_fire(text, state.pace._is_speaking):
+            asyncio.create_task(fp.fire(session, text))
+    except Exception as e:
+        logger.error(f"[filler] user-said hook error: {e}")
     await state.pace.acquire()
     await agent.refresh_instructions()
     logger.info("[BRAIN] generating reply to kid input...")
@@ -709,6 +828,16 @@ async def entrypoint(ctx: JobContext):
 
     session = AgentSession(**session_kwargs)
     logger.info("[nova-v207] step 1: AgentSession created")
+
+    # Wire the pre-cached filler system (instant reactions while the LLM cooks).
+    # Guarded so a filler problem can never block the session from starting.
+    state.session = session
+    try:
+        state.filler = FillerPlayer()
+        logger.info(f"[filler] system ready (enabled={state.filler.enabled})")
+    except Exception as e:
+        logger.error(f"[filler] init failed, fillers disabled: {e}")
+        state.filler = None
 
     # ─────────────────────────────────────────────────────────────
     # HEAVY LOGGING HOOKS — distinct log line at each pipeline stage.
