@@ -302,6 +302,7 @@ class NovaSessionState:
         # Per-session telemetry counters → logged as [SESSION-SUMMARY] at teardown
         self.t_start = time.time()
         self.metrics = {"turns": 0, "replies": 0, "fillers": 0, "errors": 0}
+        self.active = True  # flipped False at teardown to stop the idle loop ghost
         # Load full kid profile from memory (Postgres or RAM)
         mem = memory.store.get(self.kid_id)
         # Always copy what we have — even partial profile helps Nova
@@ -737,8 +738,13 @@ async def _idle_watch_loop(session: AgentSession, state: NovaSessionState):
     cooldown = float(os.getenv("NOVA_IDLE_COOLDOWN_SEC", "25"))
     last_nudge = 0.0
 
-    while True:
+    while state.active:
         await asyncio.sleep(2)  # check every couple seconds
+
+        # FIX: stop once the session has torn down — was firing nudges after
+        # close ("[idle] nudge failed: AgentSession isn't running").
+        if not state.active:
+            return
 
         # Never nudge while Nova is mid-speech, or during goodbye wrap-up edge
         if state.pace._is_speaking:
@@ -1068,6 +1074,7 @@ async def entrypoint(ctx: JobContext):
     # Per-session AUTO-SUMMARY: logged once when the session tears down, so EVERY
     # session self-reports its headline metrics into the log stream (option A).
     async def _log_session_summary():
+        state.active = False  # stop the idle watch loop (no ghost nudges post-close)
         try:
             dur = round(time.time() - state.t_start, 1)
             logger.info("[SESSION-SUMMARY] " + json.dumps({

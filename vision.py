@@ -1,14 +1,19 @@
 """
-Nova vision — Gemini Flash 2.5 for "she sees me" observation.
+Nova vision — Gemini Flash for "she sees me" observation.
 
-Day 4 deliverable. Gemini Flash gets a webcam frame and returns
-one warm, specific visual detail Nova can comment on.
+Gets a webcam frame and returns one warm, specific visual detail Nova can
+comment on.
 
 Why Gemini instead of Claude Haiku:
 - More permissive on images of people (Claude refused ~30% of the time)
 - ~50% cheaper
 - Faster first-token latency
 - Free tier: 1500 req/day (plenty for current scale)
+
+Uses the CURRENT google-genai SDK (`from google import genai`); the old
+google-generativeai package is deprecated. Import + calls are fully guarded so
+a missing package or API mismatch disables vision rather than crashing the
+worker / web service that import this module.
 """
 
 import os
@@ -17,37 +22,34 @@ import logging
 from typing import Optional
 
 try:
-    # NOTE: uses the older google-generativeai library (works fine today).
-    # Google's newer library is google-genai — migrate only when this one
-    # actually stops working; the API calls below would need rewriting.
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
     GEMINI_AVAILABLE = True
-except ImportError:
+except Exception:  # ImportError or any load issue
     GEMINI_AVAILABLE = False
 
 logger = logging.getLogger("nova-vision")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-flash-latest"  # always points at the newest Flash
+# google-genai uses concrete model ids; "gemini-flash-latest" alias may not
+# resolve here, so default to a known-good Flash. Env-overridable.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
+_client = None
 if GEMINI_AVAILABLE and GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    _model = genai.GenerativeModel(GEMINI_MODEL)
+    try:
+        _client = genai.Client(api_key=GEMINI_API_KEY)
+        logger.info(f"vision: google-genai client ready (model={GEMINI_MODEL})")
+    except Exception as e:
+        logger.error(f"vision: genai.Client init failed — vision disabled: {e}")
+        _client = None
 else:
-    _model = None
+    logger.warning(f"vision: disabled (available={GEMINI_AVAILABLE}, key={'set' if GEMINI_API_KEY else 'MISSING'})")
 
 
 REFUSAL_PATTERNS = [
-    "i can't",
-    "i cannot",
-    "i'm not able",
-    "i am not able",
-    "i'm unable",
-    "as an ai",
-    "sorry",
-    "safety concerns",
-    "can't engage",
-    "skip",
+    "i can't", "i cannot", "i'm not able", "i am not able", "i'm unable",
+    "as an ai", "sorry", "safety concerns", "can't engage", "skip",
 ]
 
 
@@ -74,30 +76,28 @@ Reply now with just the gentle observation:"""
 
 async def observe_frame(image_bytes: bytes, media_type: str = "image/jpeg") -> Optional[str]:
     """Send a webcam frame to Gemini → return one warm visual observation, or None."""
-    if not _model:
+    if not _client:
         logger.warning("Gemini not configured — vision disabled")
         return None
 
     try:
-        # Use SDK's async generation
-        response = await _model.generate_content_async(
-            [
+        response = await _client.aio.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type=media_type),
                 VISION_PROMPT,
-                {"mime_type": media_type, "data": image_bytes},
             ],
-            generation_config={
-                "max_output_tokens": 60,
-                "temperature": 0.7,
-            },
+            config=types.GenerateContentConfig(
+                max_output_tokens=60,
+                temperature=0.7,
+            ),
         )
-        text = (response.text or "").strip()
-        # strip surrounding quotes
-        text = text.strip('"\'')
-        
+        text = (response.text or "").strip().strip('"\'')
+
         if is_refusal(text):
             logger.info(f"vision refusal/skip: '{text[:60]}'")
             return None
-        
+
         logger.info(f"vision observation: '{text}'")
         return text
     except Exception as e:
@@ -109,7 +109,6 @@ async def observe_from_data_url(data_url: str) -> Optional[str]:
     """Convenience: accept a data:image/...;base64,... URL and observe it."""
     try:
         header, b64 = data_url.split(",", 1)
-        # extract media type from data:image/jpeg;base64
         media_type = "image/jpeg"
         if "image/" in header:
             media_type = header.split("data:")[1].split(";")[0]
