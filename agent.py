@@ -252,6 +252,13 @@ class PaceGate:
 class NovaSessionState:
     """Per-room state Nova tracks for THIS conversation."""
 
+    def bump(self, k):
+        """Safely increment a per-session metric counter (never raises)."""
+        try:
+            self.metrics[k] = self.metrics.get(k, 0) + 1
+        except Exception:
+            pass
+
     def __init__(self, kid_id: Optional[str] = None):
         self.kid_id = kid_id or f"anon-{int(time.time())}"
         self.ctx = personality.NovaContext(phase="recognition")
@@ -259,6 +266,9 @@ class NovaSessionState:
         self.vision_fired = False
         self.greeting_done = False
         self.session_started_at = time.time()
+        # Per-session telemetry counters → logged as [SESSION-SUMMARY] at teardown
+        self.t_start = time.time()
+        self.metrics = {"turns": 0, "replies": 0, "fillers": 0, "errors": 0}
         # Load full kid profile from memory (Postgres or RAM)
         mem = memory.store.get(self.kid_id)
         # Always copy what we have — even partial profile helps Nova
@@ -369,6 +379,7 @@ class NovaAgent(Agent):
                 except Exception:
                     txt = None
                 if fp.should_fire(txt, self.state.pace._is_speaking):
+                    self.state.bump("fillers")
                     asyncio.create_task(fp.fire(sess, txt))
         except Exception as e:
             logger.error(f"[filler] turn hook error: {e}")
@@ -609,6 +620,7 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     try:
         fp = getattr(state, "filler", None)
         if fp and fp.should_fire(text, state.pace._is_speaking):
+            state.bump("fillers")
             asyncio.create_task(fp.fire(session, text))
     except Exception as e:
         logger.error(f"[filler] user-said hook error: {e}")
@@ -876,6 +888,7 @@ async def entrypoint(ctx: JobContext):
                 return
             # Log BOTH interim and final so we can see Deepgram is alive at all
             if is_final:
+                state.bump("turns")
                 logger.info(f"[HEAR] final ✓ kid voice → '{text[:80]}'")
             else:
                 logger.info(f"[HEAR] interim … '{text[:60]}'")
@@ -887,6 +900,7 @@ async def entrypoint(ctx: JobContext):
         @session.on("error")
         def _on_session_error(ev):
             err = getattr(ev, "error", None)
+            state.bump("errors")
             logger.error(f"[STT-OR-AGENT-ERROR] {err}")
     except Exception:
         pass
@@ -913,6 +927,7 @@ async def entrypoint(ctx: JobContext):
             if isinstance(txt, list): txt = " ".join(str(x) for x in txt)
             txt = str(txt)[:140]
             if role == "assistant" and txt:
+                state.bump("replies")
                 logger.info(f"[SPEAK] Nova said → '{txt}'")
                 # Save Nova's reply to history — multi-turn memory survives
                 try:
@@ -1021,6 +1036,21 @@ async def entrypoint(ctx: JobContext):
 
     # Gentle idle engagement — soft presence if the child goes quiet
     asyncio.create_task(_idle_watch_loop(session, state))
+
+    # Per-session AUTO-SUMMARY: logged once when the session tears down, so EVERY
+    # session self-reports its headline metrics into the log stream (option A).
+    async def _log_session_summary():
+        try:
+            dur = round(time.time() - state.t_start, 1)
+            logger.info("[SESSION-SUMMARY] " + json.dumps({
+                "kid": state.kid_id, "dur_s": dur, "phase": state.ctx.phase, **state.metrics
+            }))
+        except Exception as e:
+            logger.error(f"[summary] failed: {e}")
+    try:
+        ctx.add_shutdown_callback(_log_session_summary)
+    except Exception as e:
+        logger.warning(f"[summary] could not register shutdown callback: {e}")
 
 
 # ────────────────────────────────────────────────────────────────────────
