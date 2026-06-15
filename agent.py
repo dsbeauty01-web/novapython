@@ -146,7 +146,11 @@ class FillerPlayer:
             logger.error(f"[filler] _load_clips crashed, disabling: {e}")
         self.last_name = None
         self.last_fire = 0.0
-        self.enabled = bool(type(self)._clips)
+        # DISABLED by default: the filler shared the speech queue with real
+        # replies — non-interruptible fillers blocked/truncated replies and
+        # added latency. Off until redesigned. Re-enable with env NOVA_FILLERS=1.
+        self.enabled = bool(type(self)._clips) and os.getenv("NOVA_FILLERS", "0") == "1"
+        logger.info(f"[filler] enabled={self.enabled} (NOVA_FILLERS={os.getenv('NOVA_FILLERS', '0')})")
 
     def _pick(self):
         names = [n for n in self._clips if n != self.last_name] or list(self._clips)
