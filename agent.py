@@ -782,6 +782,16 @@ async def entrypoint(ctx: JobContext):
         # token cap later, set it per-request, not on the constructor.)
     )
     logger.info(f"[nova-v207] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
+    # Runtime proof of the resolved voice config (env overrides default if set)
+    logger.info(
+        "[nova-v207] TTS RUNTIME = model=%s voice=%s stability=%s style=%s"
+        % (
+            os.getenv("NOVA_TTS_MODEL", "eleven_flash_v2_5"),
+            os.getenv("NOVA_VOICE_ID", "XrExE9yKIg1WjnnlVkGX"),
+            os.getenv("NOVA_VOICE_STABILITY", "0.50"),
+            os.getenv("NOVA_VOICE_STYLE", "0.40"),
+        )
+    )
 
     # Build session pipeline
     session_kwargs = dict(
