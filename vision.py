@@ -33,7 +33,7 @@ logger = logging.getLogger("nova-vision")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # google-genai uses concrete model ids; "gemini-flash-latest" alias may not
 # resolve here, so default to a known-good Flash. Env-overridable.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 _client = None
 if GEMINI_AVAILABLE and GEMINI_API_KEY:
