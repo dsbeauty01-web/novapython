@@ -681,8 +681,13 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     await agent.refresh_instructions()
     logger.info("[BRAIN] generating reply to kid input...")
     try:
-        await session.generate_reply(user_input=text)
+        # v222: cap the reply so a Gemini/google-plugin stall can't dead-air for
+        # ~48s (seen in testing → RPC timeout). 14s is way above a normal reply
+        # (~1-2s); only a true hang trips it, and we recover instead of hanging.
+        await asyncio.wait_for(session.generate_reply(user_input=text), timeout=14.0)
         logger.info(f"[BRAIN] reply call returned for: '{text[:40]}'")
+    except asyncio.TimeoutError:
+        logger.error(f"[BRAIN] reply TIMED OUT (>14s) — cancelled to avoid dead air: '{text[:40]}'")
     except Exception as e:
         logger.exception(f"[BRAIN] generate_reply FAILED for kid input: {e}")
 
