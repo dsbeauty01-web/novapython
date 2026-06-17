@@ -216,7 +216,7 @@ def _voice_settings():
     """Build ElevenLabs VoiceSettings, including `speed` if the installed plugin
     supports it. Older plugin versions lack the field — omit rather than crash."""
     base = dict(
-        stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.65")),
+        stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.75")),
         similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.90")),
         style=float(os.getenv("NOVA_VOICE_STYLE", "0.30")),
         use_speaker_boost=True,
@@ -684,10 +684,16 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
         # v222: cap the reply so a Gemini/google-plugin stall can't dead-air for
         # ~48s (seen in testing → RPC timeout). 14s is way above a normal reply
         # (~1-2s); only a true hang trips it, and we recover instead of hanging.
-        await asyncio.wait_for(session.generate_reply(user_input=text), timeout=14.0)
+        await asyncio.wait_for(session.generate_reply(user_input=text), timeout=8.0)
         logger.info(f"[BRAIN] reply call returned for: '{text[:40]}'")
     except asyncio.TimeoutError:
-        logger.error(f"[BRAIN] reply TIMED OUT (>14s) — cancelled to avoid dead air: '{text[:40]}'")
+        # Never leave the kid in silence — say a quick bridge, then try once more.
+        logger.error(f"[BRAIN] reply TIMED OUT (>8s) — speaking fallback + retry: '{text[:40]}'")
+        try:
+            await session.say("hmm... let me think for a sec...")
+            await asyncio.wait_for(session.generate_reply(user_input=text), timeout=8.0)
+        except Exception as e2:
+            logger.error(f"[BRAIN] retry after timeout failed: {e2}")
     except Exception as e:
         logger.exception(f"[BRAIN] generate_reply FAILED for kid input: {e}")
 
@@ -1058,9 +1064,9 @@ async def entrypoint(ctx: JobContext):
     # (saves ~2-3s, consistent first impression). The LLM drives every reply
     # AFTER this opening line.
     if state.ctx.name and state.ctx.sessions_before > 0:
-        first_line = f"Ohh — {state.ctx.name}! ...you're back!"
+        first_line = f"Ohh... {state.ctx.name}! ...hi friend... you're back!"
     else:
-        first_line = "Ohh... hi! I'm Nova... what's your name?"
+        first_line = "Ohh... hi! ...I'm Nova... what should I call you?"
 
     try:
         await session.say(first_line)
