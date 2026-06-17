@@ -834,6 +834,12 @@ async def entrypoint(ctx: JobContext):
         logger.error("[nova-v207] FATAL: OPENAI_API_KEY missing on worker")
         raise RuntimeError("OPENAI_API_KEY required — add it on Render → worker → Environment")
 
+    # Phase-1 STT swap: Deepgram needs its own key. Fail loud at boot rather than
+    # silently producing zero transcripts (the old "Nova can't hear me" failure).
+    if not os.getenv("DEEPGRAM_API_KEY"):
+        logger.error("[nova-v207] FATAL: DEEPGRAM_API_KEY missing on worker (STT is now Deepgram nova-3)")
+        raise RuntimeError("DEEPGRAM_API_KEY required — add it on Render → worker → Environment")
+
     llm_instance = openai_plugin.LLM(
         model=os.getenv("NOVA_OPENAI_MODEL", "gpt-4o-mini"),
         temperature=float(os.getenv("NOVA_TEMPERATURE", "0.85")),
@@ -862,23 +868,29 @@ async def entrypoint(ctx: JobContext):
     # Build session pipeline
     session_kwargs = dict(
         # ─────────────────────────────────────────────────────────────
-        # STT: OpenAI Whisper (gpt-4o-mini-transcribe).
-        # Was: Deepgram. Confirmed broken on this account after 2 days of
-        # logs showing `[MIC-IN] subscribed` but ZERO `[HEAR]` lines — meaning
-        # audio reached Deepgram but no transcripts came back. Likely missing
-        # account entitlement for multilingual streaming on nova-3.
-        # Switched to OpenAI because the OPENAI_API_KEY is already on the
-        # worker and proven working (the brain uses it). Same key, one vendor.
+        # STT: Deepgram Nova-3 (Phase-1 STT swap, Jun 17 2026).
+        # Replaces both (a) the old browser SpeechRecognition path and
+        # (b) the OpenAI Whisper worker STT. Server-side streaming STT —
+        # ~200-300ms faster than browser endpointing, better at kid mishears.
+        #
+        # NOTE on the earlier "Deepgram broken" history: prior failure showed
+        # [MIC-IN] subscribed but ZERO [HEAR] lines. Two plausible causes were
+        # since fixed independently: (1) RoomInputOptions now forces 16kHz
+        # audio (wrong sample rate silently produced nothing), (2) we now set
+        # interim_results=True so transcripts stream continuously. If [HEAR]
+        # lines STILL never appear after deploy, it's an account-entitlement
+        # issue on nova-3 streaming → revert this block to OpenAI Whisper.
+        #
+        # endpointing=400ms matches the Silero VAD min_silence (0.4s) so turn
+        # detection feels identical to before. Uses DEEPGRAM_API_KEY (worker env).
         # ─────────────────────────────────────────────────────────────
-        stt=openai_plugin.STT(
-            model=os.getenv("NOVA_STT_MODEL", "gpt-4o-mini-transcribe"),
+        stt=deepgram.STT(
+            model=os.getenv("NOVA_STT_MODEL", "nova-3"),
             language=os.getenv("NOVA_STT_LANG", "en"),
-            api_key=openai_key,
-            # CRITICAL: enable realtime streaming. Without this, STT only
-            # transcribes ONCE per turn after VAD says the kid stopped talking
-            # — and if VAD never fires, no transcript ever appears (silent fail).
-            # Realtime mode streams interim + final transcripts continuously.
-            use_realtime=True,
+            smart_format=True,
+            interim_results=True,
+            endpointing=int(os.getenv("NOVA_STT_ENDPOINTING", "400")),
+            api_key=os.getenv("DEEPGRAM_API_KEY"),
         ),
         llm=llm_instance,
         tts=elevenlabs.TTS(
