@@ -889,7 +889,10 @@ async def entrypoint(ctx: JobContext):
             language=os.getenv("NOVA_STT_LANG", "en"),
             smart_format=True,
             interim_results=True,
-            endpointing=int(os.getenv("NOVA_STT_ENDPOINTING", "400")),
+            # This pinned livekit-plugins-deepgram names it `endpointing_ms`
+            # (NOT `endpointing` — that raises TypeError on job start). 400ms
+            # matches the Silero VAD min_silence so turn-taking feels identical.
+            endpointing_ms=int(os.getenv("NOVA_STT_ENDPOINTING", "400")),
             api_key=os.getenv("DEEPGRAM_API_KEY"),
         ),
         llm=llm_instance,
