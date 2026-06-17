@@ -215,7 +215,7 @@ def _voice_settings():
     """Build ElevenLabs VoiceSettings, including `speed` if the installed plugin
     supports it. Older plugin versions lack the field — omit rather than crash."""
     base = dict(
-        stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.65")),
+        stability=float(os.getenv("NOVA_VOICE_STABILITY", "0.75")),
         similarity_boost=float(os.getenv("NOVA_VOICE_SIMILARITY", "0.90")),
         style=float(os.getenv("NOVA_VOICE_STYLE", "0.30")),
         use_speaker_boost=True,
@@ -303,6 +303,7 @@ class NovaSessionState:
         self.t_start = time.time()
         self.metrics = {"turns": 0, "replies": 0, "fillers": 0, "errors": 0}
         self.active = True  # flipped False at teardown to stop the idle loop ghost
+        self.client_ready = asyncio.Event()  # set when browser finishes its reveal beat
         # Load full kid profile from memory (Postgres or RAM)
         mem = memory.store.get(self.kid_id)
         # Always copy what we have — even partial profile helps Nova
@@ -534,6 +535,12 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                         logger.info(f"[CLIENT] t={t} [{tag}] {m}{extra}")
                 except Exception as e:
                     logger.error(f"[client-log] handler error: {e}")
+
+            elif kind == "client-ready":
+                # Browser finished its reveal beat — NOW Nova may greet (cinematic
+                # reveal-then-greet). Greeting otherwise fires on an 8s fallback.
+                logger.info("[ready] client-ready received → releasing greeting")
+                state.client_ready.set()
 
         except Exception as e:
             logger.error(f"[data] parse error: {e}")
@@ -1055,9 +1062,18 @@ async def entrypoint(ctx: JobContext):
     # (saves ~2-3s, consistent first impression). The LLM drives every reply
     # AFTER this opening line.
     if state.ctx.name and state.ctx.sessions_before > 0:
-        first_line = f"Ohh — {state.ctx.name}! ...you're back!"
+        first_line = f"Ohh... {state.ctx.name}! ...hi friend... you're back!"
     else:
-        first_line = "Ohh... hi! I'm Nova... what's your name?"
+        first_line = "Ohh... hi! ...I'm Nova... what should I call you?"
+
+    # Cinematic reveal: wait until the browser signals it has revealed Nova
+    # (client-ready) before greeting — so she greets AFTER she appears, not behind
+    # the overlay. 8s fallback so she never stays silent if the signal is missed.
+    try:
+        await asyncio.wait_for(state.client_ready.wait(), timeout=12.0)
+        logger.info("[nova-v207] greeting released by client-ready")
+    except asyncio.TimeoutError:
+        logger.info("[nova-v207] greeting released by 12s fallback (no client-ready)")
 
     try:
         await session.say(first_line)
