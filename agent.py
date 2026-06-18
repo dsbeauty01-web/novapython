@@ -780,7 +780,10 @@ async def _idle_watch_loop(session: AgentSession, state: NovaSessionState):
             last_nudge = time.time()
             logger.info(f"[idle] soft nudge ({phase}): '{line}'")
         except Exception as e:
-            logger.error(f"[idle] nudge failed: {e}")
+            # Expected if the session is tearing down between our active-check and
+            # say() — downgraded from error so it doesn't look like a real fault.
+            logger.warning(f"[idle] nudge skipped (session ending): {e}")
+            return
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -937,6 +940,23 @@ async def entrypoint(ctx: JobContext):
     def _on_remote_pub(publication, participant):
         kind = getattr(publication, "kind", "?")
         logger.info(f"[MIC-IN] {participant.identity} published {kind} track")
+
+    # FIX (idle nudges after disconnect): when the kid leaves, the AgentSession
+    # closes immediately, but state.active only flipped in the shutdown callback
+    # ~20s later — so the idle loop kept calling session.say() and logging
+    # "[idle] nudge failed: AgentSession isn't running". Flip it the INSTANT a
+    # non-agent participant disconnects so the idle loop stops on its next tick.
+    @ctx.room.on("participant_disconnected")
+    def _on_participant_left(participant):
+        ident = getattr(participant, "identity", "?")
+        if not str(ident).startswith(("runway-", "agent-", "nova")):
+            state.active = False
+            logger.info(f"[nova-v207] kid {ident} disconnected → stopping idle loop")
+
+    @ctx.room.on("disconnected")
+    def _on_room_disconnected(*_a):
+        state.active = False
+        logger.info("[nova-v207] room disconnected → stopping idle loop")
 
     session = AgentSession(**session_kwargs)
     logger.info("[nova-v207] step 1: AgentSession created")
