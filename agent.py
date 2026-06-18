@@ -304,6 +304,15 @@ class NovaSessionState:
         self.metrics = {"turns": 0, "replies": 0, "fillers": 0, "errors": 0}
         self.active = True  # flipped False at teardown to stop the idle loop ghost
         self.client_ready = asyncio.Event()  # set when browser finishes its reveal beat
+        # ── Move-play game state ──
+        self.game_started = False
+        self.moves_done = 0
+        self.game_done = asyncio.Event()        # kid signalled done OR 5-min cap
+        self.kid_spoke = asyncio.Event()        # pulsed whenever the kid speaks
+        self.last_kid_signal = None             # 'yes' | 'done' | None
+        self.last_kid_text = None
+        self.last_kid_speech_at = 0.0
+        self.vision_waiter = None               # asyncio.Future per vision request
         # Load full kid profile from memory (Postgres or RAM)
         mem = memory.store.get(self.kid_id)
         # Always copy what we have — even partial profile helps Nova
@@ -478,11 +487,17 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
 
             elif kind == "vision-observation":
                 obs = msg.get("text", "").strip()
-                if obs and not state.vision_fired:
-                    state.vision_fired = True
+                if obs:
                     state.ctx.observed_visual = obs
                     logger.info(f"[data] vision observation: '{obs}'")
-                    asyncio.create_task(_drop_in_observation(session, state, obs, agent))
+                    # Move-game path: resolve whoever is awaiting this frame.
+                    w = state.vision_waiter
+                    if w is not None and not w.done():
+                        w.set_result(obs)
+                    # Legacy one-shot drop-in (only when NOT mid-game).
+                    elif not state.game_started and not state.vision_fired:
+                        state.vision_fired = True
+                        asyncio.create_task(_drop_in_observation(session, state, obs, agent))
 
             # ═══ TEST BENCH HANDLERS ═══
             elif kind == "test-utter":
@@ -803,6 +818,227 @@ async def _vision_trigger_loop(room: rtc.Room, state: NovaSessionState):
 
 
 # ────────────────────────────────────────────────────────────────────────
+# MOVE-PLAY GAME — worker-driven loop (6-10), flexible length, 5-min cap
+# ────────────────────────────────────────────────────────────────────────
+async def _request_vision_and_wait(room: rtc.Room, state: NovaSessionState,
+                                   timeout: float = 6.0) -> Optional[str]:
+    """Ask the browser for ONE webcam frame and await the observation."""
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    state.vision_waiter = fut
+    try:
+        msg = json.dumps({"kind": "request-vision"})
+        await room.local_participant.publish_data(msg.encode("utf-8"), reliable=True)
+        logger.info("[game] vision requested for current move")
+    except Exception as e:
+        logger.error(f"[game] vision request failed: {e}")
+        return None
+    try:
+        return await asyncio.wait_for(fut, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.info("[game] vision timed out — reacting blind")
+        return None
+    finally:
+        if state.vision_waiter is fut:
+            state.vision_waiter = None
+
+
+async def _wait_for_signal(state: NovaSessionState, want: str, timeout: float) -> bool:
+    """Wait up to `timeout`s for the kid to give a 'yes' or 'done' signal.
+    Returns True if `want` signal arrived, False on timeout/other."""
+    deadline = time.time() + timeout
+    state.last_kid_signal = None
+    while time.time() < deadline:
+        if state.game_done.is_set():
+            return want == "done"
+        if state.last_kid_signal == want:
+            state.last_kid_signal = None
+            return True
+        if state.last_kid_signal and state.last_kid_signal != want:
+            # opposite signal (e.g. waiting for yes, got done)
+            sig = state.last_kid_signal
+            state.last_kid_signal = None
+            return sig == want
+        await asyncio.sleep(0.3)
+    return False
+
+
+async def _game_say(session: AgentSession, state: NovaSessionState, line: str):
+    """Speak a scripted game line, serialized through the pace gate."""
+    if not state.active or state.game_done.is_set():
+        return
+    try:
+        await state.pace.acquire()
+        await session.say(line)
+        logger.info(f"[game] say → '{line}'")
+    except Exception as e:
+        logger.warning(f"[game] say failed: {e}")
+
+
+def _extract_name(text: Optional[str]) -> Optional[str]:
+    """Best-effort name pull from the kid's first utterance."""
+    if not text:
+        return None
+    import re
+    t = text.strip()
+    m = re.search(r"(?:my name is|i'm|i am|call me|it's|its|name's)\s+([A-Za-z][A-Za-z\-']{1,20})", t, re.I)
+    if m:
+        cand = m.group(1)
+    else:
+        # single/short answer like "Putu" or "Putu!" → take first word if short
+        words = re.findall(r"[A-Za-z][A-Za-z\-']+", t)
+        if len(words) <= 3 and words:
+            cand = words[0]
+        else:
+            return None
+    cand = cand.strip().capitalize()
+    # reject obvious non-names
+    if cand.lower() in ("yes", "no", "hi", "hey", "hello", "yeah", "nova", "okay", "ok", "what", "the", "um"):
+        return None
+    return cand if 1 < len(cand) <= 20 else None
+
+
+async def _run_move_game(session: AgentSession, state: NovaSessionState,
+                         agent: "NovaAgent", room: rtc.Room):
+    """The whole move-play flow: invite → moves loop → exit. 5-min hard cap."""
+    if state.game_started:
+        return
+    state.game_started = True
+    # phase stays "recognition" through name + invite (warm voice); flips to
+    # "moves" only once play actually starts (set below, after acceptance).
+    cap_sec = float(os.getenv("NOVA_GAME_CAP_SEC", "300"))  # 5 min hard cap
+    game_start = time.time()
+    name = state.ctx.name or "friend"
+
+    def time_left() -> float:
+        return cap_sec - (time.time() - game_start)
+
+    # ── wait for the kid to say their name (first utterance after greeting) ──
+    if not state.ctx.name:
+        state.kid_spoke.clear()
+        try:
+            await asyncio.wait_for(state.kid_spoke.wait(), timeout=18.0)
+        except asyncio.TimeoutError:
+            pass
+        nm = _extract_name(state.last_kid_text)
+        if nm:
+            state.ctx.name = nm
+            try:
+                memory.store.update(state.kid_id, name=nm)
+            except Exception:
+                pass
+            logger.info(f"[game] captured name: {nm}")
+        name = state.ctx.name or "friend"
+        await asyncio.sleep(1.3)  # let the auto-pipeline finish echoing the name
+
+    # ── INVITE ──
+    await _game_say(session, state, f"{name}! okay — you ready to play a move game with me?")
+    accepted = await _wait_for_signal(state, "yes", timeout=15.0)
+    if state.game_done.is_set():
+        await _end_game(session, state, agent, None)
+        return
+    if not accepted:
+        # silent / no — chill, don't force it
+        await _game_say(session, state, "okay! just hang out... say PLAY whenever you wanna go.")
+        got = await _wait_for_signal(state, "yes", timeout=60.0)
+        if not got or state.game_done.is_set():
+            await _end_game(session, state, agent, None)
+            return
+
+    # ── MOVES LOOP (easy → harder, Nova's order) ──
+    state.ctx.phase = "moves"
+    await agent.refresh_instructions()
+    moves = list(personality.MOVE_LIBRARY)
+    last_move_label = None
+    nudges = 0
+    for idx, (mid, prompt, look_for) in enumerate(moves):
+        if state.game_done.is_set() or time_left() < 12 or not state.active:
+            break
+
+        # 1. say the move prompt
+        state.ctx.current_move_prompt = prompt
+        last_move_label = look_for
+        await agent.refresh_instructions()
+        await _game_say(session, state, prompt)
+
+        # 2. give them ~2.5s to do it
+        await asyncio.sleep(float(os.getenv("NOVA_MOVE_WAIT_SEC", "2.5")))
+        if state.game_done.is_set():
+            break
+
+        # 3. fire vision + 4. specific reaction
+        obs = await _request_vision_and_wait(room, state, timeout=6.0)
+        if state.game_done.is_set():
+            break
+        instr = personality.move_reaction_instructions(prompt, obs, state.ctx.name)
+        try:
+            await state.pace.acquire()
+            await agent.refresh_instructions()
+            await session.generate_reply(instructions=instr)
+            logger.info(f"[game] reacted to move '{mid}' (obs={'yes' if obs else 'none'})")
+        except Exception as e:
+            logger.warning(f"[game] reaction failed: {e}")
+        state.moves_done += 1
+        state.ctx.moves_done = state.moves_done
+
+        # 5. every 3 moves, check if they wanna keep going
+        if state.moves_done % 3 == 0 and idx < len(moves) - 1 and time_left() > 20:
+            await asyncio.sleep(0.6)
+            await _game_say(session, state, "wanna do another?")
+            cont = await _wait_for_signal(state, "yes", timeout=12.0)
+            if state.game_done.is_set():
+                break
+            if not cont:
+                # no clear yes → one gentle nudge, then wind down
+                nudges += 1
+                if nudges >= 3:
+                    break
+                await _game_say(session, state, f"hey {name}? still there?")
+                cont2 = await _wait_for_signal(state, "yes", timeout=12.0)
+                if not cont2 or state.game_done.is_set():
+                    break
+        else:
+            await asyncio.sleep(0.4)
+
+    await _end_game(session, state, agent, last_move_label)
+
+
+async def _end_game(session: AgentSession, state: NovaSessionState,
+                    agent: "NovaAgent", last_move: Optional[str]):
+    """Warm exit line + mark done. Idempotent."""
+    if getattr(state, "_game_ended", False):
+        return
+    state._game_ended = True
+    state.game_done.set()
+    state.ctx.phase = "goodbye"
+    name = state.ctx.name or "friend"
+    did = f' That {last_move} was COOL.' if last_move else ""
+    instr = (
+        f"The move game is wrapping up. Say a warm 2-sentence goodbye to {name}. "
+        f"Mention ONE specific thing they did (e.g. \"{last_move or 'that last move'}\") "
+        f"and tell them to come back whenever — you'll be here. "
+        f"NEVER say great job/amazing/awesome."
+    )
+    try:
+        await state.pace.acquire()
+        await agent.refresh_instructions()
+        await session.generate_reply(instructions=instr)
+        logger.info(f"[game] exit goodbye sent (last_move={last_move}){did}")
+    except Exception as e:
+        logger.warning(f"[game] exit failed: {e}")
+
+
+async def _game_hard_cap(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
+    """Independent watchdog — force a goodbye at the 5-min cap."""
+    cap_sec = float(os.getenv("NOVA_GAME_CAP_SEC", "300"))
+    try:
+        await asyncio.wait_for(state.game_done.wait(), timeout=cap_sec)
+    except asyncio.TimeoutError:
+        logger.info("[game] 5-min hard cap reached → ending")
+        await _end_game(session, state, agent, None)
+
+
+# ────────────────────────────────────────────────────────────────────────
 # Entrypoint — once per Runway session
 # ────────────────────────────────────────────────────────────────────────
 async def entrypoint(ctx: JobContext):
@@ -993,6 +1229,20 @@ async def entrypoint(ctx: JobContext):
             if is_final:
                 state.bump("turns")
                 logger.info(f"[HEAR] final ✓ kid voice → '{text[:80]}'")
+                # Feed the move-game orchestrator: pulse "kid spoke" + classify
+                # the utterance as a done/yes signal so the loop can react.
+                state.last_kid_text = text
+                state.last_kid_speech_at = time.time()
+                sig = personality.detect_signal(text)
+                if sig:
+                    state.last_kid_signal = sig
+                    if sig == "done":
+                        logger.info("[game] kid signalled DONE")
+                        state.game_done.set()
+                try:
+                    state.kid_spoke.set()
+                except Exception:
+                    pass
             else:
                 logger.info(f"[HEAR] interim … '{text[:60]}'")
     except Exception as e:
@@ -1097,9 +1347,9 @@ async def entrypoint(ctx: JobContext):
     # (saves ~2-3s, consistent first impression). The LLM drives every reply
     # AFTER this opening line.
     if state.ctx.name and state.ctx.sessions_before > 0:
-        first_line = f"Ohh... {state.ctx.name}! ...hi friend... you're back!"
+        first_line = f"Yo! {state.ctx.name}! ...you're BACK! okay — what should I call you today?"
     else:
-        first_line = "Ohh... hi! ...I'm Nova... what should I call you?"
+        first_line = "Yo! Hi! I'm Nova! ...what should I call you?"
 
     # Cinematic reveal: wait until the browser signals it has revealed Nova
     # (client-ready) before greeting — so she greets AFTER she appears, not behind
@@ -1116,11 +1366,18 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.error(f"[nova-v207] hardcoded greeting failed: {e}")
 
-    # Kick off vision request in background
-    asyncio.create_task(_vision_trigger_loop(ctx.room, state))
-
-    # Gentle idle engagement — soft presence if the child goes quiet
-    asyncio.create_task(_idle_watch_loop(session, state))
+    # MOVE-PLAY GAME (default ON). The game drives its own vision (per move) and
+    # its own nudges/cap, so the legacy one-shot vision loop + idle loop are NOT
+    # started in game mode. Toggle off with NOVA_GAME_MODE=0 to get the old flow.
+    if os.getenv("NOVA_GAME_MODE", "1") == "1":
+        logger.info("[game] move-play mode ON — starting game loop")
+        asyncio.create_task(_run_move_game(session, state, agent, ctx.room))
+        asyncio.create_task(_game_hard_cap(session, state, agent))
+    else:
+        # Kick off vision request in background
+        asyncio.create_task(_vision_trigger_loop(ctx.room, state))
+        # Gentle idle engagement — soft presence if the child goes quiet
+        asyncio.create_task(_idle_watch_loop(session, state))
 
     # Per-session AUTO-SUMMARY: logged once when the session tears down, so EVERY
     # session self-reports its headline metrics into the log stream (option A).
