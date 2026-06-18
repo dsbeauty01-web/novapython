@@ -115,7 +115,11 @@ FILLER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio", "
 # empathic/surprised interjections that play while she thinks — they cover latency
 # AND warm her FACE (Runway lip-syncs whatever audio plays). Varied so she never
 # repeats back-to-back (_pick avoids the last one).
-FILLER_NAMES = ["hmm", "ohh", "ooh", "mmm", "oh", "wait", "whoa", "yay"]
+# NEUTRAL, context-free listening sounds only (~0.4-0.6s). Meaning-laden words
+# ("wait/whoa/yay/okay") are OUT — they imply a reaction that often contradicts
+# the real reply ("doesn't make sense"). These are pure "I'm here, thinking" sounds
+# that fit ANY reply and also warm her face via lip-sync.
+FILLER_NAMES = ["mm", "mmhm", "ooh", "ohh", "hmm", "ahh"]
 
 
 class FillerPlayer:
@@ -450,7 +454,10 @@ class NovaAgent(Agent):
                     asyncio.create_task(fp.fire(sess, txt))
         except Exception as e:
             logger.error(f"[filler] turn hook error: {e}")
-        await self.refresh_instructions()
+        # LATENCY: do NOT call refresh_instructions() here — mutating the chat
+        # context inside on_user_turn_completed cancels LiveKit's preemptive
+        # (speculative) generation, adding ~200-400ms to every reply. The prompt
+        # is kept fresh by phase changes + the ambient-vision loop instead.
         await self.state.pace.acquire()
 
 
@@ -926,10 +933,13 @@ def _is_explicit_name(text: Optional[str]) -> bool:
     return bool(re.search(r"(?:my name is|call me|name's|they call me|i'm |i am )", text, re.I))
 
 
-async def _ambient_vision_loop(room: rtc.Room, state: NovaSessionState):
+async def _ambient_vision_loop(room: rtc.Room, state: NovaSessionState,
+                               agent: "NovaAgent"):
     """Nova's EYES. Pulls a fresh camera observation every few seconds during
     play and stores it as the live 'RIGHT NOW YOU SEE' context, so the brain is
-    NEVER blind. De-duped so the same scene isn't re-stored."""
+    NEVER blind. De-duped. Refreshes the prompt here (between turns) so vision
+    stays fresh WITHOUT refreshing inside on_user_turn_completed (which would
+    kill preemptive generation)."""
     interval = float(os.getenv("NOVA_VISION_INTERVAL_SEC", "4.0"))
     last = None
     await asyncio.sleep(1.0)
@@ -940,6 +950,10 @@ async def _ambient_vision_loop(room: rtc.Room, state: NovaSessionState):
                 state.ctx.observed_visual = obs
                 last = obs
                 logger.info(f"[vision] live → '{obs[:70]}'")
+                try:
+                    await agent.refresh_instructions()
+                except Exception:
+                    pass
         await asyncio.sleep(interval)
 
 
@@ -1024,7 +1038,7 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
     state.ctx.phase = "play"
     await agent.refresh_instructions()
     logger.info("[nova] → PLAY phase (brain-led, ambient vision on)")
-    vis = asyncio.create_task(_ambient_vision_loop(room, state))
+    vis = asyncio.create_task(_ambient_vision_loop(room, state, agent))
     try:
         await _play_heartbeat(session, state, agent, room)
     finally:
@@ -1159,10 +1173,9 @@ async def entrypoint(ctx: JobContext):
             language=os.getenv("NOVA_STT_LANG", "en"),
             smart_format=True,
             interim_results=True,
-            # This pinned livekit-plugins-deepgram names it `endpointing_ms`
-            # (NOT `endpointing` — that raises TypeError on job start). 400ms
-            # matches the Silero VAD min_silence so turn-taking feels identical.
-            endpointing_ms=int(os.getenv("NOVA_STT_ENDPOINTING", "400")),
+            # `endpointing_ms` (NOT `endpointing`). LATENCY: dropped 400→250ms so
+            # she answers ~150ms sooner after a short kid utterance ("yes", "done").
+            endpointing_ms=int(os.getenv("NOVA_STT_ENDPOINTING", "250")),
             api_key=os.getenv("DEEPGRAM_API_KEY"),
         ),
         llm=llm_instance,
@@ -1180,7 +1193,7 @@ async def entrypoint(ctx: JobContext):
             # v225: trimmed for snappy turn-taking. 0.4s of silence ends a turn
             # (was the ~0.55 default), 0.05s min speech, 0.2s prefix padding.
             min_speech_duration=0.05,
-            min_silence_duration=0.4,
+            min_silence_duration=0.3,
             prefix_padding_duration=0.2,
             activation_threshold=0.5,
         ),
