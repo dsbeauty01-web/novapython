@@ -111,7 +111,11 @@ logging.basicConfig(level=logging.INFO)
 # error loads/plays disables fillers and never touches the real-reply path.
 # ──────────────────────────────────────────────────────────────────────
 FILLER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio", "fillers")
-FILLER_NAMES = ["ooh", "yes", "wait", "woohoo", "hmm", "boom", "almost", "lightning"]
+# Authentic loora-voice thinking-sounds (re-generated Jun 18 2026). Short (0.5-0.7s)
+# empathic/surprised interjections that play while she thinks — they cover latency
+# AND warm her FACE (Runway lip-syncs whatever audio plays). Varied so she never
+# repeats back-to-back (_pick avoids the last one).
+FILLER_NAMES = ["hmm", "ohh", "ooh", "mmm", "oh", "wait", "whoa", "yay"]
 
 
 class FillerPlayer:
@@ -146,10 +150,10 @@ class FillerPlayer:
             logger.error(f"[filler] _load_clips crashed, disabling: {e}")
         self.last_name = None
         self.last_fire = 0.0
-        # DISABLED by default: the filler shared the speech queue with real
-        # replies — non-interruptible fillers blocked/truncated replies and
-        # added latency. Off until redesigned. Re-enable with env NOVA_FILLERS=1.
-        self.enabled = bool(type(self)._clips) and os.getenv("NOVA_FILLERS", "0") == "1"
+        # ON by default now: fresh SHORT loora thinking-sounds (~0.6s) cover the
+        # think gap empathically and warm her face via lip-sync. Toggle off with
+        # NOVA_FILLERS=0 if they ever feel like too much.
+        self.enabled = bool(type(self)._clips) and os.getenv("NOVA_FILLERS", "1") == "1"
         logger.info(f"[filler] enabled={self.enabled} (NOVA_FILLERS={os.getenv('NOVA_FILLERS', '0')})")
 
     def _pick(self):
