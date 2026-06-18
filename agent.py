@@ -224,7 +224,8 @@ def _voice_settings():
         style=float(os.getenv("NOVA_VOICE_STYLE", "0.30")),
         use_speaker_boost=True,
     )
-    speed = float(os.getenv("NOVA_VOICE_SPEED", "0.92"))
+    # Calmer, unhurried delivery (was 0.92). Lower = slower/calmer.
+    speed = float(os.getenv("NOVA_VOICE_SPEED", "0.88"))
     try:
         vs = elevenlabs.VoiceSettings(**base, speed=speed)
         logger.info(f"[nova-v207] VoiceSettings: speed={speed} SUPPORTED by plugin")
@@ -879,27 +880,50 @@ async def _game_say(session: AgentSession, state: NovaSessionState, line: str):
         logger.warning(f"[game] say failed: {e}")
 
 
+# Words that are NEVER a name (questions, fillers, commands, pronouns).
+_NOT_A_NAME = {
+    "yes", "no", "hi", "hey", "hello", "yeah", "yep", "nova", "okay", "ok", "um",
+    "uh", "the", "a", "and", "but", "me", "my", "you", "your", "i", "im", "it",
+    "what", "where", "who", "when", "why", "how", "which", "whats", "wheres",
+    "are", "am", "is", "was", "can", "could", "do", "does", "did", "will",
+    "hmm", "oh", "ohh", "wait", "stop", "play", "go", "name", "call", "here",
+    "there", "this", "that", "good", "bad", "cool", "nice", "hungry", "tired",
+}
+
 def _extract_name(text: Optional[str]) -> Optional[str]:
-    """Best-effort name pull from the kid's first utterance."""
+    """Best-effort name pull. STRONG patterns ('my name is X') win even inside a
+    question; otherwise only a clean short statement (not a question) counts."""
     if not text:
         return None
     import re
     t = text.strip()
-    m = re.search(r"(?:my name is|i'm|i am|call me|it's|its|name's)\s+([A-Za-z][A-Za-z\-']{1,20})", t, re.I)
+    # Strong explicit pattern — trust it even if the sentence has a '?'
+    m = re.search(r"(?:my name is|i'm|i am|call me|name's|they call me)\s+([A-Za-z][A-Za-z\-']{1,20})", t, re.I)
     if m:
         cand = m.group(1)
     else:
-        # single/short answer like "Putu" or "Putu!" → take first word if short
-        words = re.findall(r"[A-Za-z][A-Za-z\-']+", t)
-        if len(words) <= 3 and words:
-            cand = words[0]
-        else:
+        # No explicit pattern: a QUESTION is never a name ("where am I?", "what?")
+        if "?" in t:
             return None
+        words = re.findall(r"[A-Za-z][A-Za-z\-']+", t)
+        if not words or len(words) > 3:
+            return None
+        # the first word must not be a question/command/filler word
+        if words[0].lower() in _NOT_A_NAME:
+            return None
+        cand = words[0]
     cand = cand.strip().capitalize()
-    # reject obvious non-names
-    if cand.lower() in ("yes", "no", "hi", "hey", "hello", "yeah", "nova", "okay", "ok", "what", "the", "um"):
+    if cand.lower() in _NOT_A_NAME or not (1 < len(cand) <= 20):
         return None
-    return cand if 1 < len(cand) <= 20 else None
+    return cand
+
+
+def _is_explicit_name(text: Optional[str]) -> bool:
+    """True if the kid explicitly stated a name ('my name is X', 'call me X')."""
+    if not text:
+        return False
+    import re
+    return bool(re.search(r"(?:my name is|call me|name's|they call me|i'm |i am )", text, re.I))
 
 
 async def _ambient_vision_loop(room: rtc.Room, state: NovaSessionState):
@@ -1243,9 +1267,11 @@ async def entrypoint(ctx: JobContext):
                 # Capture the name SYNCHRONOUSLY here (before the brain auto-replies)
                 # so the very next reply uses the name + play-invite persona — fixes
                 # the race where Nova asked for the name again.
-                if not state.ctx.name and state.ctx.phase in ("intro", "recognition"):
+                if state.ctx.phase in ("intro", "recognition") and (
+                    not state.ctx.name or _is_explicit_name(text)
+                ):
                     nm = _extract_name(text)
-                    if nm:
+                    if nm and nm != state.ctx.name:
                         state.ctx.name = nm
                         try:
                             memory.store.update(state.kid_id, name=nm)
