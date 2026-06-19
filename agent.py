@@ -187,18 +187,36 @@ class FillerPlayer:
             return False
         return True
 
-    async def fire(self, session, text):
-        """Play one filler clip. Fully isolated — never raises into the turn."""
+    def claim(self, text, is_speaking):
+        """Atomically decide + reserve a filler, SYNCHRONOUSLY. Returns the chosen
+        clip name (to hand to fire) or None.
+
+        Why synchronous: the v225 browser delivers each kid utterance TWICE — the
+        published mic (-> STT -> on_user_turn_completed) AND a 'user-said' data
+        packet (-> _user_said). Both hooks used to call should_fire()+fire(), and
+        because last_fire was only stamped *inside* the async fire() task (which
+        runs later), BOTH passed the gap check before either stamped -> two clips
+        played = the 'ooo ooo' double-voice. Stamping last_fire here, on the event
+        loop, before create_task, means the second hook sees the gap and skips."""
+        if not self.should_fire(text, is_speaking):
+            return None
+        name = self._pick()
+        self.last_name = name
+        self.last_fire = time.time()      # reserve NOW so the twin hook can't double-fire
+        logger.info(f"[filler] CLAIM '{name}' t={self.last_fire:.3f} user='{(text or '')[:30]}'")
+        return name
+
+    async def fire(self, session, name):
+        """Play one already-claimed filler clip. Fully isolated — never raises
+        into the turn. INTERRUPTIBLE: the real reply (produced in parallel) cuts
+        the clip the instant it's ready, so the filler only covers the think-gap
+        instead of *adding* its full length in front of every reply."""
         try:
-            name = self._pick()
-            self.last_name = name
-            self.last_fire = time.time()
-            logger.info(f"[filler] CHOSE '{name}' t={self.last_fire:.3f} user='{(text or '')[:30]}'")
             pcm, rate, ch = self._clips[name]
-            logger.info(f"[filler] PLAYING '{name}' (real LLM reply being produced in parallel)")
+            logger.info(f"[filler] PLAYING '{name}' (real reply being produced in parallel)")
             await session.say(
                 name, audio=self._frames(pcm, rate, ch),
-                add_to_chat_ctx=False, allow_interruptions=False,
+                add_to_chat_ctx=False, allow_interruptions=True,
             )
             logger.info(f"[filler] DONE '{name}'")
         except Exception as e:
@@ -449,9 +467,10 @@ class NovaAgent(Agent):
                     txt = tc() if callable(tc) else tc
                 except Exception:
                     txt = None
-                if fp.should_fire(txt, self.state.pace._is_speaking):
+                name = fp.claim(txt, self.state.pace._is_speaking)
+                if name:
                     self.state.bump("fillers")
-                    asyncio.create_task(fp.fire(sess, txt))
+                    asyncio.create_task(fp.fire(sess, name))
         except Exception as e:
             logger.error(f"[filler] turn hook error: {e}")
         # LATENCY: do NOT call refresh_instructions() here — mutating the chat
@@ -705,9 +724,10 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     # FILLER: instant reaction while the real reply is produced (typed path)
     try:
         fp = getattr(state, "filler", None)
-        if fp and fp.should_fire(text, state.pace._is_speaking):
+        name = fp.claim(text, state.pace._is_speaking) if fp else None
+        if name:
             state.bump("fillers")
-            asyncio.create_task(fp.fire(session, text))
+            asyncio.create_task(fp.fire(session, name))
     except Exception as e:
         logger.error(f"[filler] user-said hook error: {e}")
     await state.pace.acquire()
