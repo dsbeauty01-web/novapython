@@ -855,6 +855,33 @@ async def _request_vision_and_wait(room: rtc.Room, state: NovaSessionState,
             state.vision_waiter = None
 
 
+async def _warm_llm(llm_instance):
+    """Pre-open the OpenAI connection during startup so the FIRST kid reply isn't
+    ~3s (cold TLS/pool) — warm calls are ~1.4s. Uses the SAME llm_instance the
+    session uses, so the opened connection is reused. Fully guarded: any API
+    mismatch just skips warming and never affects the session."""
+    try:
+        from livekit.agents import llm as _llm
+        try:
+            cc = _llm.ChatContext.empty()
+        except Exception:
+            cc = _llm.ChatContext()
+        try:
+            cc.add_message(role="user", content="hi")
+        except Exception:
+            pass
+        stream = llm_instance.chat(chat_ctx=cc)
+        async for _ in stream:
+            break  # first token → connection is warm
+        try:
+            await stream.aclose()
+        except Exception:
+            pass
+        logger.info("[warm] LLM connection pre-warmed (first reply will be fast)")
+    except Exception as e:
+        logger.info(f"[warm] LLM pre-warm skipped ({e})")
+
+
 async def _wait_for_signal(state: NovaSessionState, want: str, timeout: float) -> bool:
     """Wait up to `timeout`s for the kid to give a 'yes' or 'done' signal.
     Returns True if `want` signal arrived, False on timeout/other."""
@@ -1136,6 +1163,9 @@ async def entrypoint(ctx: JobContext):
         # token cap later, set it per-request, not on the constructor.)
     )
     logger.info(f"[nova-v207] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
+    # Pre-warm the brain NOW (runs during Runway/session setup + greeting, ~5s of
+    # slack) so the FIRST kid reply isn't cold (~3s → ~1.4s).
+    asyncio.create_task(_warm_llm(llm_instance))
     # Runtime proof of the resolved voice config (env overrides default if set)
     logger.info(
         "[nova-v207] TTS RUNTIME = model=%s voice=%s stability=%s similarity=%s style=%s speed=%s"
