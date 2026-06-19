@@ -119,7 +119,11 @@ FILLER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audio", "
 # ("wait/whoa/yay/okay") are OUT — they imply a reaction that often contradicts
 # the real reply ("doesn't make sense"). These are pure "I'm here, thinking" sounds
 # that fit ANY reply and also warm her face via lip-sync.
-FILLER_NAMES = ["mm", "mmhm", "ooh", "ohh", "hmm", "ahh"]
+# NOTE: "ahh" removed — it's a long open-vowel ("ahhhh") that sounds strangled/
+# trembly ("like Parkinson") when the real reply interrupts it mid-vowel. Closed
+# sounds (mm/mmhm/hmm) and short rounded ones (ooh/ohh) cut cleanly; open held
+# vowels don't. This list matches the safe backchannel set (mm/mmhm/ooh/ohh/hmm).
+FILLER_NAMES = ["mm", "mmhm", "ooh", "ohh", "hmm"]
 
 
 class FillerPlayer:
@@ -158,7 +162,7 @@ class FillerPlayer:
         # think gap empathically and warm her face via lip-sync. Toggle off with
         # NOVA_FILLERS=0 if they ever feel like too much.
         self.enabled = bool(type(self)._clips) and os.getenv("NOVA_FILLERS", "1") == "1"
-        logger.info(f"[filler] enabled={self.enabled} (NOVA_FILLERS={os.getenv('NOVA_FILLERS', '0')})")
+        logger.info(f"[filler] enabled={self.enabled} (NOVA_FILLERS={os.getenv('NOVA_FILLERS', '1')})")
 
     def _pick(self):
         names = [n for n in self._clips if n != self.last_name] or list(self._clips)
