@@ -158,11 +158,13 @@ class FillerPlayer:
             logger.error(f"[filler] _load_clips crashed, disabling: {e}")
         self.last_name = None
         self.last_fire = 0.0
-        # ON by default now: fresh SHORT loora thinking-sounds (~0.6s) cover the
-        # think gap empathically and warm her face via lip-sync. Toggle off with
-        # NOVA_FILLERS=0 if they ever feel like too much.
-        self.enabled = bool(type(self)._clips) and os.getenv("NOVA_FILLERS", "1") == "1"
-        logger.info(f"[filler] enabled={self.enabled} (NOVA_FILLERS={os.getenv('NOVA_FILLERS', '1')})")
+        # OFF by default. Every clip goes through Runway lipsync (~500ms tax), so a
+        # pre-reply "thinking sound" can't reliably land BEFORE the real reply — it
+        # arrives late and overlaps/follows her sentence ("...move game? AHHH"),
+        # which sounds nonsensical. The avatar pipeline makes the tiny-instant-filler
+        # pattern structurally impossible. Re-enable for experiments with NOVA_FILLERS=1.
+        self.enabled = bool(type(self)._clips) and os.getenv("NOVA_FILLERS", "0") == "1"
+        logger.info(f"[filler] enabled={self.enabled} (NOVA_FILLERS={os.getenv('NOVA_FILLERS', '0')})")
 
     def _pick(self):
         names = [n for n in self._clips if n != self.last_name] or list(self._clips)
