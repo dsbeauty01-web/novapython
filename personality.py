@@ -604,10 +604,10 @@ PHRASE_BANKS = {
         "FROZEN!",
         "still — YES!",
         "STATUE!",
-        "ohh perfect!",
         "yes statue!",
         "frozen!",
         "FREEZE that!",
+        "ICE COLD!",
     ],
     "freeze_miss": [
         "ohh you wiggled!",
@@ -645,6 +645,9 @@ def reaction_tier(event_name: str, streak: int) -> str:
     return "llm_rich"
 
 
+_LAST_PHRASE = {}  # v300 QA: last line picked per bank, to avoid back-to-back repeats
+
+
 def pick_phrase(event_name: str, streak: int, name: Optional[str] = None) -> str:
     """Pick a phrase from the bank for an event. Returns text Nova speaks."""
     import random
@@ -665,7 +668,12 @@ def pick_phrase(event_name: str, streak: int, name: Optional[str] = None) -> str
     options = PHRASE_BANKS.get(bank, [])
     if not options:
         return ""
+    # v300 QA: don't repeat the same line back-to-back during a combo
+    last = _LAST_PHRASE.get(bank)
     line = random.choice(options)
+    if len(options) > 1 and line == last:
+        line = random.choice([o for o in options if o != last])
+    _LAST_PHRASE[bank] = line
     # Occasionally sprinkle the name on a big moment
     if name and bank == "hit_big" and random.random() < 0.3:
         line = f"{name}! {line}"
