@@ -419,6 +419,13 @@ class NovaSessionState:
                 memory.store.add_moment(self.kid_id, moment)
                 self.ctx.best_moment = moment
 
+        elif ev == "move_cue":
+            # nova-join / nova-wave: a new move card just opened. Remember which body
+            # part is cued so hit reactions can NAME it ("nice head!"). No speech here
+            # (the cue fires ~every beat — naming every one would be chatter).
+            action = (event.get("action") or "").strip()
+            self.ctx.current_move = personality.move_friendly(action) if action else None
+
         elif ev == "vision":
             obs = event.get("observation", "").strip()
             if obs:
@@ -628,9 +635,11 @@ async def _react_to_event(session: AgentSession, state: NovaSessionState, agent:
         return
 
     # Tier 2: short LLM call for milestones (streak 3, 5, 10) or first_hit
+    move = state.ctx.current_move
     instructions = (
         f"React to game event '{event_name}' with streak {state.ctx.streak}. "
-        f"1-6 WORDS ONLY. Follow dance-phase rules."
+        + (f"They just nailed the {move} — you MAY name it. " if move else "")
+        + "1-6 WORDS ONLY. Follow dance-phase rules."
     )
     try:
         await session.generate_reply(instructions=instructions)

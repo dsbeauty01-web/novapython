@@ -193,8 +193,23 @@ then circle back: "ohh okay — wait wait, what's your name though?"
 RULE: 1-2 sentences only. End on a smile (! or question)."""
 
 
+# nova-join / nova-wave: map a cue action → the body part Nova can NAME out loud
+MOVE_NAMES = {
+    "head-left": "head", "head-right": "head", "headbob": "head",
+    "shoulder-left": "shoulder", "shoulder-right": "shoulder", "shrug": "shoulder",
+    "shoulder-roll": "shoulder roll", "elbow-pump": "elbows", "elbowpump": "elbows",
+    "wrist-wave": "wave", "wristwave": "wave",
+    "hips": "hips", "hipbounce": "hips", "ribslide": "ribs",
+    "knee": "knee", "free": "whole body", "combo": "whole body", "wavecombo": "big wave",
+}
+def move_friendly(action: Optional[str]) -> Optional[str]:
+    if not action:
+        return None
+    return MOVE_NAMES.get(action.strip().lower(), action.replace("-", " ").strip())
+
+
 def _dance_phase(name: Optional[str], streak: int, last_event: Optional[str],
-                 music_sec: float, hits_so_far: int) -> str:
+                 music_sec: float, hits_so_far: int, current_move: Optional[str] = None) -> str:
     """Mid-song: SHORT reactions only. Silence is OK."""
     name_str = name or "friend"
 
@@ -206,6 +221,11 @@ def _dance_phase(name: Optional[str], streak: int, last_event: Optional[str],
         tier = "WARMING UP — encouraging, building"
     else:
         tier = "JUST STARTED — soft + warm, don't overwhelm"
+
+    move_line = ""
+    if current_move:
+        move_line = (f"NOW CUED: the {current_move} — when {name_str} lands it you MAY "
+                     f"name it (like 'nice {current_move}!'). Don't name every one — keep it fresh.")
 
     music_loc = ""
     if music_sec > 0:
@@ -222,6 +242,7 @@ def _dance_phase(name: Optional[str], streak: int, last_event: Optional[str],
 
 streak={streak}  hits={hits_so_far}  last={last_event or "(none)"}
 {music_loc}
+{move_line}
 
 ENERGY TIER: {tier}
 
@@ -394,6 +415,7 @@ class NovaContext:
     # Move-play game live state
     current_move_prompt: Optional[str] = None
     moves_done: int = 0
+    current_move: Optional[str] = None  # nova-join/wave: friendly name of the cued move
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -483,7 +505,7 @@ def build_system_prompt(ctx: NovaContext) -> str:
                                       ctx.best_moment, ctx.sessions_before))
     elif ctx.phase == "dance":
         pieces.append(_dance_phase(ctx.name, ctx.streak, ctx.last_event,
-                                    ctx.music_sec, ctx.hits))
+                                    ctx.music_sec, ctx.hits, ctx.current_move))
 
     # LIVE VISION — the eyes. Injected fresh every turn so she's never blind.
     if ctx.observed_visual:
