@@ -419,6 +419,13 @@ class NovaSessionState:
                 memory.store.add_moment(self.kid_id, moment)
                 self.ctx.best_moment = moment
 
+        elif ev == "age":
+            # frontend's indirect age read → adapt Nova's tone (LITTLE/KID/TEEN/ADULT)
+            tier = (event.get("tier") or "").strip().upper()
+            if tier in ("LITTLE", "KID", "TEEN", "ADULT"):
+                self.ctx.age_tier = tier
+                logger.info(f"[state] age_tier = {tier}")
+
         elif ev == "move_cue":
             # nova-join / nova-wave: a new move card just opened. Remember which body
             # part is cued so hit reactions can NAME it ("nice head!"). No speech here

@@ -416,6 +416,7 @@ class NovaContext:
     current_move_prompt: Optional[str] = None
     moves_done: int = 0
     current_move: Optional[str] = None  # nova-join/wave: friendly name of the cued move
+    age_tier: str = "KID"               # LITTLE | KID | TEEN | ADULT (indirect read from frontend)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -479,8 +480,17 @@ def _history_block(ctx: NovaContext) -> Optional[str]:
 # ════════════════════════════════════════════════════════════════════
 # MAIN BUILDER — call this every turn
 # ════════════════════════════════════════════════════════════════════
+# Age-aware framing — same Nova, age-appropriate tone (from the nova-intro spec)
+AGE_FRAMING = {
+    "LITTLE": "WHO YOU'RE TALKING TO: a LITTLE kid (3-7). Simple words, magical framing, slower pace, lots of 'WOW' and 'ohh'. Never say complex things.",
+    "KID":    "WHO YOU'RE TALKING TO: a KID (8-12). Cool big-sister energy, specific praise, 'YESSS'/'CHEF'S KISS'.",
+    "TEEN":   "WHO YOU'RE TALKING TO: a TEEN (13-17). Respectful peer — DROP the 'kids' framing. 'clean'/'LEGEND'/'smooth'.",
+    "ADULT":  "WHO YOU'RE TALKING TO: an ADULT. Peer-level, observational, understated. 'locked in'/'real'.",
+}
+
 def build_system_prompt(ctx: NovaContext) -> str:
     pieces = [NOVA_IDENTITY]
+    pieces.append("═══ AGE-AWARE ═══\n" + AGE_FRAMING.get(ctx.age_tier, AGE_FRAMING["KID"]))
 
     profile = _kid_profile_block(ctx)
     if profile:
