@@ -1284,13 +1284,15 @@ async def entrypoint(ctx: JobContext):
             min_speech_duration=0.05,
             min_silence_duration=0.3,
             prefix_padding_duration=0.2,
-            activation_threshold=0.5,
+            activation_threshold=0.6,   # higher = ignore quieter background noise (noisy rooms)
         ),
-        # v225: VAD-based turn detection (no semantic model file needed), let the
-        # kid barge in over Nova, and count just 0.4s of speech as an interruption.
+        # VAD-based turn detection (no semantic model file needed). Require ~0.9s of
+        # SUSTAINED speech to interrupt — kids' rooms are noisy and Runway can't pause
+        # to resume a false interruption, so a brief background sound must NOT cut Nova
+        # off (that was the "she loaded then I lost her" bug in a loud place).
         turn_detection="vad",
         allow_interruptions=True,
-        min_interruption_duration=0.4,
+        min_interruption_duration=0.9,
     )
     # Turn-detector disabled: its model file (model_q8.onnx) wasn't available
     # in this environment. Silero VAD (already configured) handles turn-taking
