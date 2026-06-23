@@ -1262,9 +1262,10 @@ async def entrypoint(ctx: JobContext):
             language=os.getenv("NOVA_STT_LANG", "en"),
             smart_format=True,
             interim_results=True,
-            # `endpointing_ms` (NOT `endpointing`). LATENCY: dropped 400→250ms so
-            # she answers ~150ms sooner after a short kid utterance ("yes", "done").
-            endpointing_ms=int(os.getenv("NOVA_STT_ENDPOINTING", "250")),
+            # `endpointing_ms` (NOT `endpointing`). LATENCY: 400→250→180ms so she
+            # answers sooner after a short kid utterance ("yes", "done"). Floor ~150ms
+            # (below that she cuts kids off mid-pause).
+            endpointing_ms=int(os.getenv("NOVA_STT_ENDPOINTING", "180")),
             api_key=os.getenv("DEEPGRAM_API_KEY"),
         ),
         llm=llm_instance,
