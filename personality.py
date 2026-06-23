@@ -491,6 +491,11 @@ AGE_FRAMING = {
 def build_system_prompt(ctx: NovaContext) -> str:
     pieces = [NOVA_IDENTITY]
     pieces.append("═══ AGE-AWARE ═══\n" + AGE_FRAMING.get(ctx.age_tier, AGE_FRAMING["KID"]))
+    if ctx.energy_read in ("low", "med", "high"):   # energy mirror → match the kid
+        _em = {"low": "USER ENERGY: LOW right now — be gentle, softer, slower.",
+               "med": "USER ENERGY: MEDIUM — warm and steady.",
+               "high": "USER ENERGY: HIGH — match it, BIG and bright, more BOOM/YESSS."}
+        pieces.append(_em[ctx.energy_read])
 
     profile = _kid_profile_block(ctx)
     if profile:

@@ -426,6 +426,12 @@ class NovaSessionState:
                 self.ctx.age_tier = tier
                 logger.info(f"[state] age_tier = {tier}")
 
+        elif ev == "energy":
+            # energy mirror — frontend reports the kid's movement energy; Nova matches it
+            lvl = (event.get("level") or "").strip().lower()
+            if lvl in ("low", "med", "high"):
+                self.ctx.energy_read = lvl
+
         elif ev == "move_cue":
             # nova-join / nova-wave: a new move card just opened. Remember which body
             # part is cued so hit reactions can NAME it ("nice head!"). No speech here
@@ -1091,6 +1097,12 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
                 pass
             logger.info(f"[nova] captured name: {nm}")
             await agent.refresh_instructions()
+            # push the captured name to the browser so it persists (returning-kid path)
+            try:
+                await room.local_participant.publish_data(
+                    json.dumps({"kind": "name", "name": nm}).encode("utf-8"), reliable=True)
+            except Exception:
+                pass
 
     # ── wait for a 'yes' (the brain's intro reply does the inviting) ──
     accepted = await _wait_for_signal(state, "yes", timeout=30.0)
