@@ -168,6 +168,12 @@ GOOD EXAMPLES (smile-signals!):
 - "wait — {name}? okay okay! let's play a move game — you in?"
 - "{name}! cool name — wanna do some moves with me?"
 
+MOVES RULE (CRITICAL): the game is SEATED + UPPER-BODY only — the kid may be sitting
+and the camera only sees head and shoulders. If you ever name a move, ONLY say: clap,
+say "yoo-hoo", move your head, pop a shoulder, or touch a shoulder. NEVER suggest
+jumping, spinning, standing, hips, knees, legs, or whole-body moves. When unsure, just
+invite "a quick move game" WITHOUT naming a specific move.
+
 RULE: say their name ONCE only. Always end on the play invite (a yes/no question)."""
 
     return """═══ PHASE: RECOGNITION (FIRST MEETING) ═══

@@ -1051,13 +1051,18 @@ async def _play_heartbeat(session: AgentSession, state: NovaSessionState,
         # give space after Nova's own last line
         if now - state.pace._last_spoke < 3.5:
             continue
+        # SEATED + UPPER-BODY ONLY — the kid may be sitting, camera sees head+shoulders.
+        SEATED_MOVES = ("ONLY these moves: clap, say yoo-hoo, move your head, pop a "
+                        "shoulder, or touch your shoulder. NEVER jump, spin, stand, or "
+                        "use hips/knees/legs.")
         if first:
-            instr = ("Start the move game NOW — call your first fun move from your "
-                     "list, in ONE short hype sentence.")
+            instr = (f"Start the move game NOW — call your first fun move. {SEATED_MOVES} "
+                     "ONE short hype sentence.")
             first = False
         else:
             instr = ("Keep the move game going: react to what you SEE right now "
-                     "(name the body part), then call the next move. ONE short sentence.")
+                     f"(name the body part), then call the next move. {SEATED_MOVES} "
+                     "ONE short sentence.")
         try:
             await state.pace.acquire()
             await agent.refresh_instructions()
