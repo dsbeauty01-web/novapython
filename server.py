@@ -197,8 +197,19 @@ async def vision_observe(req: VisionReq):
     observation = await vision.observe_from_data_url(req.frameDataUrl)
     if not observation:
         return {"ok": False, "text": None}
-    
+
     return {"ok": True, "text": observation}
+
+
+# /v2/age-estimate — indirect age read from a webcam frame (Gemini → a/b/c/d → tier)
+_AGE_TIER = {"a": "LITTLE", "b": "KID", "c": "TEEN", "d": "ADULT"}
+
+@app.post("/v2/age-estimate")
+async def age_estimate(req: VisionReq):
+    if not req.frameDataUrl or not req.frameDataUrl.startswith("data:image/"):
+        raise HTTPException(400, "frameDataUrl missing or invalid")
+    letter = await vision.estimate_age(req.frameDataUrl)
+    return {"ok": True, "letter": letter, "tier": _AGE_TIER.get(letter, "KID")}
 
 
 # ────────────────────────────────────────────────────────────────────────

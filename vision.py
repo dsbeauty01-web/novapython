@@ -105,6 +105,38 @@ async def observe_frame(image_bytes: bytes, media_type: str = "image/jpeg") -> O
         return None
 
 
+AGE_PROMPT = (
+    "This is a webcam frame of a person. Estimate their approximate age range. "
+    "Respond with ONLY one letter: a = young child 3-7, b = older child 8-12, "
+    "c = teen 13-17, d = adult 18+. If unsure, respond b."
+)
+
+async def estimate_age(data_url: str) -> str:
+    """Return a single age-range letter a/b/c/d from a webcam frame (defaults 'b')."""
+    if not _client:
+        return "b"
+    try:
+        header, b64 = data_url.split(",", 1)
+        media_type = "image/jpeg"
+        if "image/" in header:
+            media_type = header.split("data:")[1].split(";")[0]
+        image_bytes = base64.b64decode(b64)
+        response = await _client.aio.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[types.Part.from_bytes(data=image_bytes, mime_type=media_type), AGE_PROMPT],
+            config=types.GenerateContentConfig(max_output_tokens=4, temperature=0.0),
+        )
+        t = (response.text or "").strip().lower()
+        for ch in t:
+            if ch in "abcd":
+                logger.info(f"age estimate: {ch}")
+                return ch
+        return "b"
+    except Exception as e:
+        logger.error(f"age estimate error: {e}")
+        return "b"
+
+
 async def observe_from_data_url(data_url: str) -> Optional[str]:
     """Convenience: accept a data:image/...;base64,... URL and observe it."""
     try:
