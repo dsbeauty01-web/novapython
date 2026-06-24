@@ -1210,18 +1210,25 @@ async def entrypoint(ctx: JobContext):
         logger.error("[nova-v207] FATAL: DEEPGRAM_API_KEY missing on worker (STT is now Deepgram nova-3)")
         raise RuntimeError("DEEPGRAM_API_KEY required — add it on Render → worker → Environment")
 
-    llm_instance = openai_plugin.LLM(
-        model=os.getenv("NOVA_OPENAI_MODEL", "gpt-4o-mini"),
-        temperature=float(os.getenv("NOVA_TEMPERATURE", "0.85")),
-        api_key=openai_key,
-        # v225-fix: REMOVED `max_completion_tokens=...` here. That kwarg is not
-        # accepted by this pinned livekit-plugins-openai version, so constructing
-        # the LLM raised TypeError on worker boot → the "nova" agent never joined
-        # the room → Nova "did not connect" on every frontend. Replies are short
-        # by design anyway, so dropping the hard cap costs little. (If you want a
-        # token cap later, set it per-request, not on the constructor.)
-    )
-    logger.info(f"[nova-v207] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
+    # BRAIN: Groq (Llama 3.3 70B, ~0.2s first token) when GROQ_API_KEY is set —
+    # cuts ~0.8s off her response vs gpt-4o-mini (~1s). Falls back to gpt-4o-mini
+    # if no Groq key. Groq is OpenAI-API-compatible, so we just override base_url.
+    # (No max_completion_tokens kwarg — this pinned plugin version rejects it.)
+    groq_key = os.getenv("GROQ_API_KEY")
+    _temp = float(os.getenv("NOVA_TEMPERATURE", "0.85"))
+    if groq_key:
+        groq_model = os.getenv("NOVA_GROQ_MODEL", "llama-3.3-70b-versatile")
+        llm_instance = openai_plugin.LLM(
+            model=groq_model, temperature=_temp,
+            api_key=groq_key, base_url="https://api.groq.com/openai/v1",
+        )
+        logger.info(f"[nova-v207] brain = GROQ {groq_model} (instant)")
+    else:
+        llm_instance = openai_plugin.LLM(
+            model=os.getenv("NOVA_OPENAI_MODEL", "gpt-4o-mini"),
+            temperature=_temp, api_key=openai_key,
+        )
+        logger.info(f"[nova-v207] brain = OpenAI {os.getenv('NOVA_OPENAI_MODEL', 'gpt-4o-mini')}")
     # Pre-warm the brain NOW (runs during Runway/session setup + greeting, ~5s of
     # slack) so the FIRST kid reply isn't cold (~3s → ~1.4s).
     asyncio.create_task(_warm_llm(llm_instance))
