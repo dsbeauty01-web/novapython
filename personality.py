@@ -549,6 +549,9 @@ def build_system_prompt(ctx: NovaContext) -> str:
 # 20+ variations per tier so kids don't hear repeats in one session
 # ════════════════════════════════════════════════════════════════════
 PHRASE_BANKS = {
+    # P3 clean-isolation praise — fires only when the kid moved ONLY the cued part
+    "hit_clean": ["CLEAN!", "just that — nothing else moved!", "ISO! so clean!",
+        "ohh — only the right part!", "that's ISOLATION!", "crisp!", "yes — clean one!"],
     # Idle nudges per phase — soft presence, never naggy
     "idle_recognition": [
         "ohh — you there?",
@@ -681,6 +684,9 @@ def reaction_tier(event_name: str, streak: int) -> str:
     if event_name == "first_hit":
         return "llm_micro"  # first hit is special, deserves a real reaction
 
+    if event_name == "clean_hit":   # P3 isolation: instant clean-form praise
+        return "phrase_bank"
+
     if event_name in ("freeze_hit", "freeze_miss"):
         return "phrase_bank"
 
@@ -700,6 +706,8 @@ def pick_phrase(event_name: str, streak: int, name: Optional[str] = None) -> str
         if streak >= 5: bank = "hit_big"
         elif streak >= 3: bank = "hit_warm"
         else: bank = "hit_soft"
+    elif event_name == "clean_hit":
+        bank = "hit_clean"
     elif event_name == "miss":
         bank = "miss"
     elif event_name == "freeze_hit":

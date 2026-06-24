@@ -381,7 +381,8 @@ class NovaSessionState:
         elif ev == "hit":
             self.ctx.hits = event.get("hits", self.ctx.hits + 1)
             self.ctx.streak = event.get("streak", self.ctx.streak + 1)
-            self.ctx.last_event = "hit"
+            # P3: clean isolation (only the cued part moved) → special praise bank
+            self.ctx.last_event = "clean_hit" if event.get("clean") else "hit"
             # Track today's best streak too, so goodbye celebrates THIS session
             if self.ctx.streak > self.ctx.max_streak:
                 self.ctx.max_streak = self.ctx.streak
