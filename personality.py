@@ -682,7 +682,9 @@ def reaction_tier(event_name: str, streak: int) -> str:
         return "phrase_bank"
 
     if event_name == "first_hit":
-        return "llm_micro"  # first hit is special, deserves a real reaction
+        # was llm_micro, but first_hit fires on EVERY combo reset → an LLM call each
+        # time → reaction backlog → Nova goes "dead/stuck". Instant phrase bank instead.
+        return "phrase_bank"
 
     if event_name == "clean_hit":   # P3 isolation: instant clean-form praise
         return "phrase_bank"
