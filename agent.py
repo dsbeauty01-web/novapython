@@ -1340,6 +1340,22 @@ async def entrypoint(ctx: JobContext):
         state.active = False
         logger.info("[nova-v207] room disconnected → stopping idle loop")
 
+    # ── HUME EVI 3 (speech-to-speech) ────────────────────────────────────
+    # When USE_EVI=1, replace STT+LLM+TTS+VAD with a single Hume EVI realtime
+    # model (Kora voice + Nova config). Runway still lip-syncs the session's
+    # audio output, which is now EVI's voice. If anything fails to init, we keep
+    # the normal Deepgram→LLM→ElevenLabs pipeline so Nova never goes dark.
+    if os.getenv("USE_EVI", "").lower() in ("1", "true", "yes", "on"):
+        try:
+            from evi_realtime import HumeEVIRealtimeModel
+            session_kwargs = {
+                "llm": HumeEVIRealtimeModel(),   # reads HUME_API_KEY / HUME_SECRET_KEY / HUME_CONFIG_ID
+                "allow_interruptions": True,
+            }
+            logger.info("[nova-evi] USE_EVI=1 → STT+LLM+TTS replaced with Hume EVI realtime (Kora)")
+        except Exception as e:
+            logger.exception(f"[nova-evi] EVI init failed → falling back to normal pipeline: {e}")
+
     session = AgentSession(**session_kwargs)
     logger.info("[nova-v207] step 1: AgentSession created")
 
