@@ -428,16 +428,24 @@ class HumeEVIRealtimeSession(
         rt = self._realtime_model
         if not rt._secret_key:
             return None
-        creds = base64.b64encode(f"{rt._api_key}:{rt._secret_key}".encode()).decode()
-        session = rt._ensure_http_session()
-        async with session.post(
-            HUME_TOKEN_URL,
-            headers={"Authorization": f"Basic {creds}"},
-            data={"grant_type": "client_credentials"},
-        ) as resp:
-            resp.raise_for_status()
-            body = await resp.json()
-            return body["access_token"]
+        # Mint an OAuth token; if anything fails, fall back to the api_key query param
+        # (EVI accepts ?api_key=... directly), so auth never hard-blocks the connection.
+        try:
+            creds = base64.b64encode(f"{rt._api_key}:{rt._secret_key}".encode()).decode()
+            session = rt._ensure_http_session()
+            async with session.post(
+                HUME_TOKEN_URL,
+                headers={"Authorization": f"Basic {creds}"},
+                data={"grant_type": "client_credentials"},
+            ) as resp:
+                resp.raise_for_status()
+                # Hume's token endpoint returns JSON WITHOUT a json content-type header,
+                # so aiohttp's strict resp.json() raises ContentTypeError → content_type=None.
+                body = await resp.json(content_type=None)
+                return body.get("access_token")
+        except Exception as e:
+            logger.warning(f"EVI token mint failed ({e}); using api_key directly")
+            return None
 
     def _session_settings_msg(self) -> dict[str, Any]:
         rt = self._realtime_model
