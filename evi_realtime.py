@@ -482,6 +482,11 @@ class HumeEVIRealtimeSession(
             logger.info("connected to Hume EVI")
             # session_settings must be sent first (sets the input audio format).
             await ws.send_str(json.dumps(self._session_settings_msg()))
+            # Greet first (the worker's scripted session.say() greeting can't run on a
+            # realtime model). Only on the very first connect, not on reconnects.
+            if not getattr(self, "_greeted", False):
+                self._greeted = True
+                await ws.send_str(json.dumps({"type": "user_input", "text": "Hi Nova!"}))
 
             send_task = asyncio.create_task(self._send_task(ws), name="evi_send")
             recv_task = asyncio.create_task(self._recv_task(ws), name="evi_recv")
