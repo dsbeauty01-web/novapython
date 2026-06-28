@@ -622,6 +622,47 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
 # ────────────────────────────────────────────────────────────────────────
 # Reaction helpers
 # ────────────────────────────────────────────────────────────────────────
+def _evi_on() -> bool:
+    return os.getenv("USE_EVI", "").lower() in ("1", "true", "yes", "on")
+
+
+async def _nova_say(session: AgentSession, line: str):
+    """Speak an EXACT line, EVI-safe. THE one speech path.
+    Under EVI, session.say() is unsupported AND generate_reply(instructions=) speaks the
+    given text verbatim (assistant_input) — so we pass the FINAL LINE (never a meta-prompt).
+    Without EVI, session.say() speaks the line directly. Either way: Nova says the LINE,
+    never the prompt. (This is the fix for 'Nova read the AI instructions out loud'.)"""
+    if not line:
+        return
+    try:
+        if _evi_on():
+            await session.generate_reply(instructions=line)
+        else:
+            await session.say(line)
+        logger.info(f"[SAY] '{line[:60]}'")
+    except Exception as e:
+        logger.error(f"[SAY] failed: {e}")
+
+
+_OAI_CLIENT = None
+async def _llm_line(system: str, user: str, max_tokens: int = 40) -> str:
+    """Generate ONE short line via a cheap LLM (for EVI, which can't generate-from-instructions).
+    Returns the LINE to speak (not a prompt). Lazy-imports openai; safe-fails to ''."""
+    global _OAI_CLIENT
+    try:
+        if _OAI_CLIENT is None:
+            from openai import AsyncOpenAI
+            _OAI_CLIENT = AsyncOpenAI()  # uses OPENAI_API_KEY (already required on the worker)
+        r = await _OAI_CLIENT.chat.completions.create(
+            model=os.getenv("NOVA_OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=max_tokens, temperature=0.8)
+        return (r.choices[0].message.content or "").strip().strip('"')
+    except Exception as e:
+        logger.error(f"[llm_line] {e}")
+        return ""
+
+
 async def _react_to_event(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
     """Game event happened — pick tier (phrase bank vs LLM) for speed + cost."""
     event_name = state.ctx.last_event or "hit"
@@ -639,72 +680,42 @@ async def _react_to_event(session: AgentSession, state: NovaSessionState, agent:
     if tier == "phrase_bank":
         # Tier 1: instant, free, from PHRASE_BANKS
         line = personality.pick_phrase(event_name, state.ctx.streak, state.ctx.name)
-        if not line:
-            return
-        try:
-            await session.say(line)
-            logger.info(f"[react/bank] {event_name} streak={state.ctx.streak} → '{line}'")
-        except Exception as e:
-            logger.error(f"[react/bank] say failed: {e}")
+        await _nova_say(session, line)   # EVI-safe (was session.say → silent on EVI)
+        logger.info(f"[react/bank] {event_name} streak={state.ctx.streak} → '{line}'")
         return
 
-    # Tier 2: short LLM call for milestones (streak 3, 5, 10) or first_hit
+    # Tier 2: milestone — a GROUNDED line (names the real move), never a meta-prompt.
+    # (EVI can't generation-from-instructions; speaking a real bank line keeps it sharp + safe.
+    #  Smart-LLM-on-past-event is the next layer.)
     move = state.ctx.current_move
-    instructions = (
-        f"React to game event '{event_name}' with streak {state.ctx.streak}. "
-        + (f"They just nailed the {move} — you MAY name it. " if move else "")
-        + "1-6 WORDS ONLY. Follow dance-phase rules."
-    )
-    try:
-        await session.generate_reply(instructions=instructions)
-        logger.info(f"[react/llm] {event_name} streak={state.ctx.streak}")
-    except Exception as e:
-        logger.error(f"[react/llm] generate_reply failed: {e}")
+    base = personality.pick_phrase("hit", max(state.ctx.streak, 5), state.ctx.name) or "yes!!"
+    line = f"{move}! {base}" if move else base
+    await _nova_say(session, line)
+    logger.info(f"[react/milestone] {event_name} streak={state.ctx.streak} → '{line}'")
 
 
 async def _speak_dance_intro(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
     """Phase transitioned to dance — say ONE hype line over the countdown."""
+    import random
     await state.pace.acquire()
-    await agent.refresh_instructions()
-    instructions = (
-        "Kid just hit dance. Say ONE short hype line — 1 to 3 words only "
-        "(like 'ready?', 'okay let's go!', 'here we go!'). No questions. "
-        "Just a quick cheer."
-    )
-    try:
-        await session.generate_reply(instructions=instructions)
-    except Exception as e:
-        logger.error(f"[dance-intro] generate_reply failed: {e}")
+    line = random.choice(["okay — let's GO!", "here we go!", "ready? GO!", "let's DANCE!", "show me what you got!"])
+    await _nova_say(session, line)
 
 
 async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
     """Phase transitioned to goodbye — warm wrap-up."""
     await state.pace.acquire()
     memory.store.increment_sessions(state.kid_id)
-    await agent.refresh_instructions()
-    instructions = (
-        f"The song ended. Speak warm goodbye now. "
-        f"Stats: hits={state.ctx.hits}, max_streak={state.ctx.max_streak}. "
-        f"Follow goodbye phase rules: ONE specific celebration + ONE open question."
-    )
-    try:
-        await session.generate_reply(instructions=instructions)
-    except Exception as e:
-        logger.error(f"[goodbye] generate_reply failed: {e}")
+    nm = (state.ctx.name + "! ") if state.ctx.name else ""
+    line = (f"{nm}you did SO good — same time tomorrow?" if state.ctx.max_streak >= 3
+            else f"{nm}that was fun — come back and dance with me?")
+    await _nova_say(session, line)
 
 
 async def _drop_in_observation(session: AgentSession, state: NovaSessionState, observation: str, agent: "NovaAgent"):
     """Drop in vision observation naturally."""
     await state.pace.acquire()
-    await agent.refresh_instructions()
-    instructions = (
-        f"You just noticed: '{observation}'. "
-        f"Say it warmly with '...' pauses, like you spotted it. ONE sentence."
-    )
-    try:
-        await session.generate_reply(instructions=instructions)
-    except Exception as e:
-        logger.error(f"[vision] generate_reply failed: {e}")
+    await _nova_say(session, f"ohh... {observation}!")
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -1066,8 +1077,17 @@ async def _play_heartbeat(session: AgentSession, state: NovaSessionState,
                      "ONE short sentence.")
         try:
             await state.pace.acquire()
-            await agent.refresh_instructions()
-            await session.generate_reply(instructions=instr)
+            if _evi_on():
+                # EVI can't generate-from-instructions → make the LINE, then speak the LINE
+                # (this is the INSTRUCTOR layer: Nova calls the move so the kid copies HER).
+                line = await _llm_line(
+                    "You are Nova, a warm kids' dance instructor. Reply with ONE short line "
+                    "(<=8 words) that CALLS one fun move for the kid to copy and may name a body "
+                    "part. No questions, never say 'great job/amazing/awesome'.", instr)
+                await _nova_say(session, line or "copy me — clap your hands!")
+            else:
+                await agent.refresh_instructions()
+                await session.generate_reply(instructions=instr)
             state.moves_done += 1
             state.ctx.moves_done = state.moves_done
             logger.info(f"[beat] triggered brain (beat ~{state.moves_done})")
@@ -1153,8 +1173,14 @@ async def _end_game(session: AgentSession, state: NovaSessionState,
     )
     try:
         await state.pace.acquire()
-        await agent.refresh_instructions()
-        await session.generate_reply(instructions=instr)
+        if _evi_on():
+            line = await _llm_line("You are Nova saying a warm goodbye to a kid. ONE short "
+                "sentence: mention one specific thing they did + invite them back. Never say "
+                "'great job/amazing/awesome'.", instr)
+            await _nova_say(session, line or "you were so good — come dance with me again!")
+        else:
+            await agent.refresh_instructions()
+            await session.generate_reply(instructions=instr)
         logger.info(f"[game] exit goodbye sent (last_move={last_move}){did}")
     except Exception as e:
         logger.warning(f"[game] exit failed: {e}")
