@@ -1549,9 +1549,9 @@ async def entrypoint(ctx: JobContext):
     # (saves ~2-3s, consistent first impression). The LLM drives every reply
     # AFTER this opening line.
     if state.ctx.name and state.ctx.sessions_before > 0:
-        first_line = f"Yo! {state.ctx.name}! ...you're BACK! okay — what should I call you today?"
+        first_line = f"ohh — {state.ctx.name}! you came BACK! ...ready to play again?"
     else:
-        first_line = "Yo! Hi! I'm Nova! ...what should I call you?"
+        first_line = "hi! I'm Nova — your magic movement friend! ...what's your name?"
 
     # Cinematic reveal: wait until the browser signals it has revealed Nova
     # (client-ready) before greeting — so she greets AFTER she appears, not behind
