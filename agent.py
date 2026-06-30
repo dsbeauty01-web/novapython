@@ -1563,7 +1563,7 @@ async def entrypoint(ctx: JobContext):
         logger.info("[nova-v207] greeting released by 12s fallback (no client-ready)")
 
     try:
-        await session.say(first_line)
+        await _nova_say(session, first_line)   # EVI-safe greeting (raw session.say() fails under EVI → she was silent → blank reveal)
         logger.info(f"[nova-v207] step 8: GREETING SENT (hardcoded): '{first_line}'")
     except Exception as e:
         logger.error(f"[nova-v207] hardcoded greeting failed: {e}")
