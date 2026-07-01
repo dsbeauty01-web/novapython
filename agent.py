@@ -623,6 +623,12 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
 # Reaction helpers
 # ────────────────────────────────────────────────────────────────────────
 def _evi_on() -> bool:
+    # TEMP (2026-07-01): EVI forced OFF so Nova greets via the proven
+    # Deepgram→LLM→ElevenLabs path (session.say). The Hume EVI websocket greeting
+    # was timing out silently → Nova mute. To bring EVI back later WITHOUT a code
+    # change, set env NOVA_FORCE_ELEVENLABS=0 (and USE_EVI=1); or delete this block.
+    if os.getenv("NOVA_FORCE_ELEVENLABS", "1") == "1":
+        return False
     return os.getenv("USE_EVI", "").lower() in ("1", "true", "yes", "on")
 
 
@@ -1371,7 +1377,7 @@ async def entrypoint(ctx: JobContext):
     # model (Kora voice + Nova config). Runway still lip-syncs the session's
     # audio output, which is now EVI's voice. If anything fails to init, we keep
     # the normal Deepgram→LLM→ElevenLabs pipeline so Nova never goes dark.
-    if os.getenv("USE_EVI", "").lower() in ("1", "true", "yes", "on"):
+    if _evi_on():
         try:
             from evi_realtime import HumeEVIRealtimeModel
             session_kwargs = {
