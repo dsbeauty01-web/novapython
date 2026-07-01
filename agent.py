@@ -533,6 +533,14 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 ):
                     asyncio.create_task(_react_to_event(session, state, agent))
 
+                # POINT 4 (2026-07-01): INTRO try-move — during the intro the browser
+                # detects the move Nova asked for (e.g. a clap), lights the kid's hands,
+                # and sends this. She reacts to the REAL move (dance-phase react above
+                # only fires in "dance", so the intro needs its own hook).
+                if event.get("event") == "try_move" and state.ctx.phase in ("recognition", "intro"):
+                    asyncio.create_task(
+                        _react_to_intro_move(session, state, agent, event.get("action")))
+
                 # Phase transition to goodbye → speak final goodbye
                 if event.get("event") == "phase" and event.get("phase") == "goodbye":
                     asyncio.create_task(_speak_goodbye(session, state, agent))
@@ -648,6 +656,39 @@ async def _nova_say(session: AgentSession, line: str):
         logger.info(f"[SAY] '{line[:60]}'")
     except Exception as e:
         logger.error(f"[SAY] failed: {e}")
+
+
+# POINT 4 (2026-07-01): Nova reacts to the kid's REAL move during the INTRO try-move.
+# The browser detects it + lights the hands, then sends a game-event {try_move}. Bank
+# lines keep it INSTANT and on-persona (name the body part, no lazy praise).
+_INTRO_MOVE_REACT = {
+    "clap":  ["whoa — I SAW that clap! those HANDS!", "yesss — your hands SNAPPED together!", "ooh, that clap was SHARP!"],
+    "right": ["look at that RIGHT hand — UP it went!", "whoa — right hand SHOT up!"],
+    "left":  ["that LEFT hand, up high — I see you!", "ooh — left hand UP!"],
+    "both":  ["BOTH hands UP — big energy!", "whoa — both arms in the air!"],
+    "head":  ["look at that head move — I see you!", "ooh, you moved your HEAD!"],
+}
+
+
+async def _react_to_intro_move(session: AgentSession, state: NovaSessionState,
+                               agent: "NovaAgent", action: Optional[str]):
+    """Speak ONE instant reaction to the move the kid actually did in the intro.
+    One-shot per action so a sticky/repeated detection can't make her spam it."""
+    act = (action or "clap").lower()
+    seen = getattr(state, "_intro_moves_reacted", None)
+    if seen is None:
+        seen = set()
+        state._intro_moves_reacted = seen
+    if act in seen:
+        return
+    seen.add(act)
+    line = random.choice(_INTRO_MOVE_REACT.get(act, _INTRO_MOVE_REACT["clap"]))
+    try:
+        await state.pace.acquire()
+        await _nova_say(session, line)
+        logger.info(f"[intro-move] reacted to '{act}': {line}")
+    except Exception as e:
+        logger.warning(f"[intro-move] react failed: {e}")
 
 
 _OAI_CLIENT = None
