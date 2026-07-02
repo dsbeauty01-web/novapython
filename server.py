@@ -113,6 +113,10 @@ class CreateSessionReq(BaseModel):
     kidId: Optional[str] = None
     kidName: Optional[str] = None
     agent: Optional[str] = "nova"   # v222 sends "nova222" to reach the Gemini worker
+    # TASK 1 (fable5): the page PREFETCHES the session at load with dispatch=False
+    # (room+token only). Nova is summoned later via /v2/dispatch at the orb tap —
+    # dispatching her into an empty room at page load left her tracks unpublished.
+    dispatch: Optional[bool] = True
 
 
 @app.post("/v2/create-session")
@@ -154,17 +158,20 @@ async def create_session(req: CreateSessionReq):
         await livekit_api.room.create_room(
             api.CreateRoomRequest(name=room_name, metadata=room_metadata)
         )
-        # Summon the requested worker into this room (default "nova"; v222 sends
-        # "nova222" for the Gemini-brain worker). This is what makes it JOIN.
-        agent_name = req.agent or "nova"
-        dispatch = await livekit_api.agent_dispatch.create_dispatch(
-            api.CreateAgentDispatchRequest(
-                agent_name=agent_name,
-                room=room_name,
-                metadata=room_metadata,
+        if req.dispatch:
+            # Summon the requested worker into this room (default "nova"; v222 sends
+            # "nova222" for the Gemini-brain worker). This is what makes it JOIN.
+            agent_name = req.agent or "nova"
+            dispatch = await livekit_api.agent_dispatch.create_dispatch(
+                api.CreateAgentDispatchRequest(
+                    agent_name=agent_name,
+                    room=room_name,
+                    metadata=room_metadata,
+                )
             )
-        )
-        logger.info(f"[dispatch] {agent_name} → room={room_name} id={dispatch.id}")
+            logger.info(f"[dispatch] {agent_name} → room={room_name} id={dispatch.id}")
+        else:
+            logger.info(f"[dispatch] DEFERRED (prefetch) room={room_name} — /v2/dispatch will summon")
         await livekit_api.aclose()
     except Exception as e:
         logger.error(f"[dispatch] FAILED to summon nova: {e}")
@@ -179,6 +186,39 @@ async def create_session(req: CreateSessionReq):
         "identity": identity,
         "kidId": kid_id,
     }
+
+
+# ────────────────────────────────────────────────────────────────────────
+# /v2/dispatch — summon Nova into an already-created room (prefetch flow).
+# The page calls this AT THE ORB TAP, so the agent always joins a room the
+# kid is entering — never sits alone in an empty room from page load.
+# ────────────────────────────────────────────────────────────────────────
+class DispatchReq(BaseModel):
+    roomName: str
+    kidId: Optional[str] = None
+    agent: Optional[str] = "nova"
+
+
+@app.post("/v2/dispatch")
+async def dispatch_agent(req: DispatchReq):
+    if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET]):
+        raise HTTPException(500, "LiveKit env not set")
+    room_metadata = json.dumps({"kidId": req.kidId or ""})
+    try:
+        livekit_api = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
+        dispatch = await livekit_api.agent_dispatch.create_dispatch(
+            api.CreateAgentDispatchRequest(
+                agent_name=req.agent or "nova",
+                room=req.roomName,
+                metadata=room_metadata,
+            )
+        )
+        await livekit_api.aclose()
+        logger.info(f"[dispatch] (tap) {req.agent} → room={req.roomName} id={dispatch.id}")
+        return {"ok": True, "dispatchId": dispatch.id}
+    except Exception as e:
+        logger.error(f"[dispatch] (tap) FAILED: {e}")
+        raise HTTPException(500, f"dispatch failed: {e}")
 
 
 # ────────────────────────────────────────────────────────────────────────
