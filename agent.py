@@ -484,16 +484,25 @@ class NovaAgent(Agent):
     async def on_user_turn_completed(self, chat_ctx, new_message):
         """Hook fired when kid finishes speaking (STT final). Fire an instant
         pre-cached filler while the real reply is produced, then refresh + pace."""
+        txt = None
+        try:
+            tc = getattr(new_message, "text_content", None)
+            txt = tc() if callable(tc) else tc
+        except Exception:
+            txt = None
+        # GAME-PUSH (voice path): the kid's SPOKEN "let's dance / yes / ready" arrives HERE
+        # (Deepgram), not via user-said — hook the same escort. Her natural LLM reply still
+        # plays (it's already hype); we just open the picker under it. No extra spoken line.
+        try:
+            if txt and getattr(self.state.ctx, "phase", "") == "recognition" and _wants_to_start(txt):
+                logger.info(f"[GAME-PUSH] start intent heard (voice) in '{str(txt)[:40]}'")
+                asyncio.create_task(_push_to_game(self.state, getattr(self.state, "session", None), ""))
+        except Exception as e:
+            logger.warning(f"[GAME-PUSH] voice hook error: {e}")
         try:
             fp = getattr(self.state, "filler", None)
             sess = getattr(self.state, "session", None)
             if fp and sess:
-                txt = None
-                try:
-                    tc = getattr(new_message, "text_content", None)
-                    txt = tc() if callable(tc) else tc
-                except Exception:
-                    txt = None
                 name = fp.claim(txt, self.state.pace._is_speaking)
                 if name:
                     self.state.bump("fillers")
