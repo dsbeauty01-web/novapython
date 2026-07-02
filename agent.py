@@ -673,10 +673,12 @@ async def _nova_say(session: AgentSession, line: str):
 # lines keep it INSTANT and on-persona (name the body part, no lazy praise).
 _INTRO_MOVE_REACT = {
     "clap":  ["whoa — I SAW that clap! those HANDS!", "yesss — your hands SNAPPED together!", "ooh, that clap was SHARP!"],
+    "hands": ["whoa — I SAW those hands!", "yesss — your hands lit UP!"],
     "right": ["look at that RIGHT hand — UP it went!", "whoa — right hand SHOT up!"],
     "left":  ["that LEFT hand, up high — I see you!", "ooh — left hand UP!"],
     "both":  ["BOTH hands UP — big energy!", "whoa — both arms in the air!"],
     "head":  ["look at that head move — I see you!", "ooh, you moved your HEAD!"],
+    "shoulder": ["that SHOULDER popped — I saw it!", "ooh — shoulder UP! you found the light!"],
 }
 
 
@@ -833,6 +835,40 @@ async def _push_to_game(state: NovaSessionState, session: AgentSession, line: st
             logger.info("[GAME-PUSH] sent go-picker → browser opens the game picker")
     except Exception as e:
         logger.warning(f"[GAME-PUSH] failed: {e}")
+
+
+# What SHE says drives the world: name a body part → the browser lights it on the kid's
+# camera; call the dance → the game picker opens. Parsed from her live assistant lines.
+_NOVA_PART = [
+    (_re.compile(r"\bclap|hands?\s+together\b", _re.I), "hands"),
+    (_re.compile(r"\b(right|left|both)?\s*hands?\s+(up|high|raise)|raise\s+(your\s+)?(right|left|both)?\s*hand\b", _re.I), "hands"),
+    (_re.compile(r"\bshoulders?\b", _re.I), "shoulder"),
+    (_re.compile(r"\bhead\b", _re.I), "head"),
+]
+_NOVA_GO = _re.compile(r"\blet'?s\s+(dance|play)\b|\bpick\s+(a|your)\s+game\b|\btime\s+to\s+move\b|\bpush\s+the\s+(big\s+)?button\b", _re.I)
+
+
+def _scan_nova_line(state: NovaSessionState, txt: str):
+    """Fire-and-forget: mirror Nova's words into browser actions (recognition phase only)."""
+    try:
+        if getattr(state.ctx, "phase", "") != "recognition":
+            return
+        room = getattr(state, "room", None)
+        if not room:
+            return
+        if _NOVA_GO.search(txt or ""):
+            logger.info(f"[GAME-PUSH] Nova called the dance herself: '{txt[:50]}'")
+            asyncio.create_task(room.local_participant.publish_data(
+                json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True))
+            return
+        for pat, part in _NOVA_PART:
+            if pat.search(txt or ""):
+                logger.info(f"[CUE-PART] Nova named '{part}' → lighting it on the kid")
+                asyncio.create_task(room.local_participant.publish_data(
+                    json.dumps({"kind": "cue-part", "part": part}).encode("utf-8"), reliable=True))
+                return
+    except Exception as e:
+        logger.warning(f"[scan-nova-line] {e}")
 
 
 async def _user_said(session: AgentSession, state: NovaSessionState, agent: "NovaAgent", text: str):
@@ -1594,6 +1630,7 @@ async def entrypoint(ctx: JobContext):
             if role == "assistant" and txt:
                 state.bump("replies")
                 logger.info(f"[SPEAK] Nova said → '{txt}'")
+                _scan_nova_line(state, txt)   # light the organ she named / open the game she called
                 # Save Nova's reply to history — multi-turn memory survives
                 try:
                     memory.store.add_message(state.kid_id, "assistant", txt)
@@ -1653,6 +1690,15 @@ async def entrypoint(ctx: JobContext):
         raise
 
     logger.info("[nova-v207] step 6: pipeline ready, heavy logging active")
+    # FIX 1 (2026-07-02): tell the browser Nova is TRULY ready (session started, voice
+    # pipeline up) — the face reveal waits for THIS, not just for tracks arriving, so
+    # she never appears frozen before she can actually respond.
+    try:
+        await ctx.room.local_participant.publish_data(
+            json.dumps({"kind": "nova-ready"}).encode("utf-8"), reliable=True)
+        logger.info("[nova-v207] sent nova-ready → browser may reveal her face")
+    except Exception as e:
+        logger.warning(f"[nova-ready] publish failed: {e}")
 
     # GREETING — first words from OUR brain
     state.greeting_done = True
