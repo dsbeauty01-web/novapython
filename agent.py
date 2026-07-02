@@ -782,7 +782,7 @@ async def _test_utter(session: AgentSession, state: NovaSessionState, text: str)
     """Force Nova to say EXACTLY this text. No LLM, no interpretation."""
     await state.pace.acquire()
     try:
-        await session.say(text)
+        await _nova_say(session, text)   # EVI-safe (raw say() is silent under Hume)
         logger.info(f"[test] uttered: '{text[:40]}'")
     except Exception as e:
         logger.error(f"[test] utter failed: {e}")
@@ -970,7 +970,7 @@ async def _idle_watch_loop(session: AgentSession, state: NovaSessionState):
 
         try:
             await state.pace.acquire()
-            await session.say(line)
+            await _nova_say(session, line)   # EVI-safe (raw say() is silent under Hume)
             last_nudge = time.time()
             logger.info(f"[idle] soft nudge ({phase}): '{line}'")
         except Exception as e:
@@ -1070,12 +1070,14 @@ async def _wait_for_signal(state: NovaSessionState, want: str, timeout: float) -
 
 
 async def _game_say(session: AgentSession, state: NovaSessionState, line: str):
-    """Speak a scripted game line, serialized through the pace gate."""
+    """Speak a scripted game line, serialized through the pace gate.
+    HUME-ONLY (2026-07-02): routes through _nova_say — raw session.say() is silent
+    under EVI (supports_say=False), which muted every in-game callout."""
     if not state.active or state.game_done.is_set():
         return
     try:
         await state.pace.acquire()
-        await session.say(line)
+        await _nova_say(session, line)
         logger.info(f"[game] say → '{line}'")
     except Exception as e:
         logger.warning(f"[game] say failed: {e}")
@@ -1473,11 +1475,11 @@ async def entrypoint(ctx: JobContext):
         state.active = False
         logger.info("[nova-v207] room disconnected → stopping idle loop")
 
-    # ── HUME EVI 3 (speech-to-speech) ────────────────────────────────────
-    # When USE_EVI=1, replace STT+LLM+TTS+VAD with a single Hume EVI realtime
-    # model (Kora voice + Nova config). Runway still lip-syncs the session's
-    # audio output, which is now EVI's voice. If anything fails to init, we keep
-    # the normal Deepgram→LLM→ElevenLabs pipeline so Nova never goes dark.
+    # ── HUME EVI 3 (speech-to-speech) — THE voice, no fallback ──────────
+    # HUME-ONLY (user decision 2026-07-02): when EVI is on, Nova speaks Kora or she
+    # doesn't start — NO silent switch to ElevenLabs (that's how the wrong voice shipped).
+    # An init failure raises → the job dies loudly → the browser shows retry, and the
+    # logs say exactly why (auth/credits/websocket).
     if _evi_on():
         try:
             from evi_realtime import HumeEVIRealtimeModel
@@ -1487,7 +1489,8 @@ async def entrypoint(ctx: JobContext):
             }
             logger.info("[nova-evi] USE_EVI=1 → STT+LLM+TTS replaced with Hume EVI realtime (Kora)")
         except Exception as e:
-            logger.exception(f"[nova-evi] EVI init failed → falling back to normal pipeline: {e}")
+            logger.exception(f"[nova-evi] EVI init FAILED — HUME-ONLY mode, refusing ElevenLabs fallback: {e}")
+            raise
 
     session = AgentSession(**session_kwargs)
     logger.info("[nova-v207] step 1: AgentSession created")
