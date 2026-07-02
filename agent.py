@@ -1541,14 +1541,17 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.warning(f"[hook] conversation_item_added unavailable: {e}")
 
-    # Runway face plugin
+    # Runway face plugin — VOICE-ONLY FALLBACK (2026-07-02): if the avatar can't start
+    # (e.g. Runway 400 "not enough credits", outage), DO NOT crash the job — Nova
+    # continues as voice-only. Her audio publishes directly via RoomIO. The browser
+    # reveals with a static face when only audio arrives. She must never fully die
+    # because the face vendor is down.
     try:
         runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
         await runway_avatar.start(session, room=ctx.room)
         logger.info(f"[nova-v207] step 2: runway avatar started, id={avatar_id[:8]}")
     except Exception as e:
-        logger.exception(f"[nova-v207] CRASH at runway start: {e}")
-        raise
+        logger.exception(f"[nova-v207] runway start FAILED → VOICE-ONLY fallback (no avatar): {e}")
 
     # The agent
     agent = NovaAgent(state)
