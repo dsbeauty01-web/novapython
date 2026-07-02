@@ -512,6 +512,7 @@ class NovaAgent(Agent):
 # ────────────────────────────────────────────────────────────────────────
 def register_data_handler(room: rtc.Room, state: NovaSessionState, session: AgentSession, agent: "NovaAgent"):
     """Listen for game events from the browser."""
+    state.room = room   # so _push_to_game can send go-picker to the browser
 
     @room.on("data_received")
     def on_data(packet: rtc.DataPacket):
@@ -790,6 +791,41 @@ async def _test_speak_with_overlay(session: AgentSession, state: NovaSessionStat
         logger.error(f"[test] overlay-speak failed: {e}")
 
 
+import re as _re
+_START_PHRASE = _re.compile(r"\blet'?s\s+(start|dance|play|go)\b|\bstart\s+the\s+game\b|\bi'?m\s+ready\b", _re.I)
+_START_WORD = _re.compile(r"\b(start|dance|play|go|ready|yes|yalla|ok(?:ay)?|begin)\b", _re.I)
+_NEGATION = _re.compile(r"\b(no|not|don'?t|stop|wait|later)\b", _re.I)
+
+
+def _wants_to_start(text: str) -> bool:
+    """True only for a REAL let's-go: explicit phrase anywhere, or a short (≤3 word)
+    positive burst like 'yes!' / 'dance!' / 'ready'. Never on negations, never on
+    keywords buried in chatter ('I like to play soccer')."""
+    t = (text or "").strip()
+    if not t or _NEGATION.search(t):
+        return False
+    if _START_PHRASE.search(t):
+        return True
+    return len(t.split()) <= 3 and bool(_START_WORD.search(t))
+
+
+async def _push_to_game(state: NovaSessionState, session: AgentSession, line: str):
+    """Nova TAKES the kid to the game: speak one hype line + tell the browser to open
+    the game picker. She is a dance coach, not a chatbot — this is her exit move."""
+    try:
+        await _nova_say(session, line)
+    except Exception:
+        pass
+    try:
+        room = getattr(state, "room", None)
+        if room:
+            await room.local_participant.publish_data(
+                json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True)
+            logger.info("[GAME-PUSH] sent go-picker → browser opens the game picker")
+    except Exception as e:
+        logger.warning(f"[GAME-PUSH] failed: {e}")
+
+
 async def _user_said(session: AgentSession, state: NovaSessionState, agent: "NovaAgent", text: str):
     """Kid spoke or typed. Inject as user input + extract knowledge + save to memory."""
     logger.info(f"[TYPE] kid typed → '{text[:80]}'")
@@ -797,6 +833,21 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     # Update live context so next prompt build has the kid's words +
     # knowledge.py can detect topic mentions (colors, animals, foods)
     state.ctx.last_kid_text = text
+
+    # ── SHE'S A COACH, NOT A CHATBOT ─────────────────────────────────
+    # 1. Kid says start/dance/play/go/ready → hype line + STRAIGHT to the game picker.
+    # 2. Chit-chat cap: after 4 exchanges in the intro, she pushes to the game herself.
+    if getattr(state.ctx, "phase", "recognition") == "recognition":
+        if _wants_to_start(text):
+            logger.info(f"[GAME-PUSH] start intent heard in '{text[:40]}'")
+            asyncio.create_task(_push_to_game(state, session, "YESSS — let's dance! pick your game!"))
+            return                       # no chatbot reply on top of the push
+        state._chat_turns = getattr(state, "_chat_turns", 0) + 1
+        if state._chat_turns >= 4:
+            logger.info("[GAME-PUSH] chat cap reached → pushing to the game")
+            asyncio.create_task(_push_to_game(
+                state, session, "okay okay — enough talking, time to MOVE! pick a game!"))
+            return
 
     # Persistent message history — survives across sessions if Postgres on
     try:
