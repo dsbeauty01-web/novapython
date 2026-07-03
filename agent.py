@@ -736,6 +736,7 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                         # non-EVI path: speak the deterministic opener
                         line = getattr(state, "_first_line", None) or "hey there… I'm Nova. …I can see you, you know."
                         await _nova_say(session, line)
+                    asyncio.create_task(_silence_driver(state, session))   # FIX 4: she LEADS on silence
                 asyncio.create_task(_reveal_greet())
 
             elif kind == "client-ready":
@@ -1082,6 +1083,43 @@ def _wants_to_start(text: str) -> bool:
     if _START_PHRASE.search(t):
         return True
     return len(t.split()) <= 3 and bool(_START_WORD.search(t))
+
+
+async def _silence_driver(state: NovaSessionState, session: AgentSession):
+    """INTRO-4FIXES #4: she LEADS on silence. During recognition, if the dancer stays
+    quiet ~7s after her last line, nudge her brain to apply the current beat's silence
+    rule (retry once → fallback → ADVANCE). Max 5 nudges; stops when the phase moves on.
+    Timestamps: state._last_nova_at / _last_kid_at are set by the speak/hear hooks."""
+    nudges = 0
+    while state.active and nudges < 5:
+        await asyncio.sleep(2.0)
+        try:
+            if state.ctx.phase != "recognition":
+                return
+            now = time.time()
+            ln, lk = getattr(state, "_last_nova_at", 0), getattr(state, "_last_kid_at", 0)
+            if not ln:                      # she hasn't spoken yet — wait
+                continue
+            if now - ln < 7.0 or (lk and now - lk < 7.0):
+                continue                    # someone spoke recently — conversation alive
+            nudges += 1
+            logger.info(f"[SILENCE-DRIVER] {int(now-ln)}s quiet → nudge #{nudges} (retry/fallback/advance)")
+            model = getattr(state, "_evi_model", None)
+            if model is not None:
+                for sess in list(getattr(model, "_sessions", [])):
+                    try:
+                        sess._send({"type": "user_input",
+                                    "text": "(silence — apply the silence rule for the current step: one shorter retry if you haven't retried, otherwise use the fallback and move to the NEXT step)"})
+                        break
+                    except Exception:
+                        pass
+            else:
+                await session.generate_reply(
+                    instructions="(the dancer is silent — retry the question once shorter, or use the fallback and advance)")
+            state._last_nova_at = time.time()   # count the nudge as her turn (prevents machine-gunning)
+        except Exception as e:
+            logger.warning(f"[SILENCE-DRIVER] {e}")
+    logger.info("[SILENCE-DRIVER] done (cap or phase change)")
 
 
 async def _push_to_game(state: NovaSessionState, session: AgentSession, line: str):
@@ -1914,6 +1952,7 @@ async def entrypoint(ctx: JobContext):
             txt = str(txt)[:140]
             if role == "assistant" and txt:
                 state.bump("replies")
+                state._last_nova_at = time.time()   # FIX 4: silence-driver clock
                 logger.info(f"[SPEAK] Nova said → '{txt}'")
                 _scan_nova_line(state, txt)   # light the organ she named / open the game she called
                 # Save Nova's reply to history — multi-turn memory survives
@@ -1922,6 +1961,8 @@ async def entrypoint(ctx: JobContext):
                 except Exception as e:
                     logger.warning(f"[memory] add_message(assistant) failed: {e}")
             elif role == "user" and txt:
+                if not txt.startswith("("):     # synthetic nudges aren't the kid talking
+                    state._last_kid_at = time.time()   # FIX 4: silence-driver clock
                 logger.info(f"[HEAR] confirmed user msg → '{txt}'")
     except Exception as e:
         logger.warning(f"[hook] conversation_item_added unavailable: {e}")
