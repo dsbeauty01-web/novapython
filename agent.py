@@ -1728,14 +1728,21 @@ async def entrypoint(ctx: JobContext):
 
     logger.info("[nova-v207] step 6: pipeline ready, heavy logging active")
     # FIX 1 (2026-07-02): tell the browser Nova is TRULY ready (session started, voice
-    # pipeline up) — the face reveal waits for THIS, not just for tracks arriving, so
-    # she never appears frozen before she can actually respond.
-    try:
-        await ctx.room.local_participant.publish_data(
-            json.dumps({"kind": "nova-ready"}).encode("utf-8"), reliable=True)
-        logger.info("[nova-v207] sent nova-ready → browser may reveal her face")
-    except Exception as e:
-        logger.warning(f"[nova-ready] publish failed: {e}")
+    # pipeline up) — the face reveal waits for THIS, not just for tracks arriving.
+    # PHASE 1: RESEND every 2s until the browser acks with client-ready — a single
+    # packet can land before the browser's handler is up (seen in loop-round-1).
+    async def _announce_ready():
+        for _ in range(15):                       # up to 30s of announcing
+            if state.client_ready.is_set() or not state.active:
+                return
+            try:
+                await ctx.room.local_participant.publish_data(
+                    json.dumps({"kind": "nova-ready"}).encode("utf-8"), reliable=True)
+                logger.info("[nova-v207] sent nova-ready → browser may reveal her face")
+            except Exception as e:
+                logger.warning(f"[nova-ready] publish failed: {e}")
+            await asyncio.sleep(2.0)
+    asyncio.create_task(_announce_ready())
 
     # GREETING — first words from OUR brain
     state.greeting_done = True
