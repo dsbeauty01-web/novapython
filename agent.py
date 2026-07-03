@@ -1091,10 +1091,12 @@ async def _silence_driver(state: NovaSessionState, session: AgentSession):
     rule (retry once → fallback → ADVANCE). Max 5 nudges; stops when the phase moves on.
     Timestamps: state._last_nova_at / _last_kid_at are set by the speak/hear hooks."""
     nudges = 0
+    logger.info(f"[SILENCE-DRIVER] armed (phase={state.ctx.phase}, active={state.active})")
     while state.active and nudges < 5:
         await asyncio.sleep(2.0)
         try:
             if state.ctx.phase != "recognition":
+                logger.info(f"[SILENCE-DRIVER] phase moved to {state.ctx.phase} → standing down")
                 return
             now = time.time()
             ln, lk = getattr(state, "_last_nova_at", 0), getattr(state, "_last_kid_at", 0)
