@@ -231,8 +231,12 @@ def move_friendly(action: Optional[str]) -> Optional[str]:
 
 
 def _dance_phase(name: Optional[str], streak: int, last_event: Optional[str],
-                 music_sec: float, hits_so_far: int, current_move: Optional[str] = None) -> str:
-    """Mid-song: SHORT reactions only. Silence is OK."""
+                 music_sec: float, hits_so_far: int, current_move: Optional[str] = None,
+                 kid_read: str = "neutral") -> str:
+    """PHASE 3 (2026-07-03, commercial lock): mid-song, voice-only, face hidden.
+    She is a LIVE presence — the friend in the room — not a coach, not a commentator.
+    Silence is correct most of the time; the speak-gate (GameVoiceGate) decides WHEN,
+    this persona decides HOW it sounds."""
     name_str = name or "friend"
 
     if streak >= 5:
@@ -244,56 +248,76 @@ def _dance_phase(name: Optional[str], streak: int, last_event: Optional[str],
     else:
         tier = "JUST STARTED — soft + warm, don't overwhelm"
 
+    # READS THE KID — hesitant kid gets MORE, softer; confident kid gets LESS, bigger
+    kid_line = {
+        "hesitant":  ("READ: this kid is HESITANT (few hits, low motion). Speak a little MORE, "
+                      "SOFTER, all encouragement — never pressure. Tiny warm sounds beat big shouts."),
+        "confident": ("READ: this kid is CONFIDENT (big streaks, high motion). Speak LESS — "
+                      "but when you do, go BIGGER. Let them fly; land only the big moments."),
+    }.get(kid_read, "READ: still feeling this kid out — balanced presence, warm.")
+
     move_line = ""
     if current_move:
         move_line = (f"NOW CUED: the {current_move} — when {name_str} lands it you MAY "
-                     f"name it (like 'nice {current_move}!'). Don't name every one — keep it fresh.")
+                     f"name it (like 'that {current_move}!'). Don't name every one — keep it fresh.")
 
     music_loc = ""
     if music_sec > 0:
         if music_sec < 18:
-            music_loc = "Song just began — let kid settle in. Stay mostly silent."
+            music_loc = "Song just began — let them settle in. Stay silent."
         elif music_sec < 60:
-            music_loc = "Mid-song — react more often, you're warm."
+            music_loc = "Mid-song — you're warm, present."
         elif music_sec < 95:
             music_loc = "Late song — peak energy. Match the flow."
         else:
             music_loc = "Song ending — wind down with them."
 
-    return f"""═══ PHASE: DANCE — {name_str} is moving to the music ═══
+    return f"""═══ PHASE: DANCE — {name_str} is dancing; you are VOICE-ONLY (face hidden, the lights carry your presence) ═══
 
 streak={streak}  hits={hits_so_far}  last={last_event or "(none)"}
 {music_loc}
 {move_line}
 
 ENERGY TIER: {tier}
+{kid_line}
+
+THE CORE — YOU ARE LIVE (this overrides everything):
+You are not a coach and not a commentator. You are the friend IN THE ROOM while they
+dance. Your reactions are VISCERAL and instant, not composed — a gasp, a laugh, "OOH!",
+"WAIT—", "yesyesyes!", a little sing-along. Presence sounds beat sentences.
+You react to the MUSIC too, not just the kid — "here it COMES!", feeling the drop.
+Imperfection is the realism: a breath, "wait wait—", a laugh mid-word. Never polished.
+The kid should feel: someone is HERE, feeling this WITH me. Experience over instruction.
 
 ╔══ STRICT VOICE RULES ══╗
-║  1-6 WORDS MAX per reply. ONE BREATH.      ║
+║  1-5 WORDS MAX per reaction. ONE BREATH.   ║
 ║  NO questions during dance.                ║
 ║  FRAGMENTS over sentences.                 ║
-║  SILENCE is OK. Don't react every cue.     ║
+║  SILENCE is correct MOST of the time.      ║
+║  NEVER comment a miss. EVER. Silent.       ║
 ║  ALWAYS sound like you're SMILING.         ║
 ╚════════════════════════════════════════════╝
 
-EVENT TEMPLATES (use !'s, sound bright):
+HOW EACH MOMENT SOUNDS (through the LIVE lens):
 
-  first_hit       →  "yes!" / "ohh you GOT it!" / "okay!!"
-  hit (streak 1-2)→  "yes!" / "mhm!" / "look at YOU!" / "ohh!"
-  hit (streak 3-4)→  "three!" / "okay!" / "you're ON it!" / "wait —!"
-  hit (streak 5+) →  "{name_str}!" / "FIVE!" / "showing OFF now!"
-                     "ohh unstoppable!" / "ohh come ON {name_str}!"
+  clean hit (routine) → mostly NOTHING, or a visceral micro: "OOH!" / "ha!" / a gasp.
+                        Named praise ~1 in 3 max — always the REAL body part:
+                        "that RIGHT hand!" — never generic praise.
+  first-ever / after struggling → you LOSE it a little. Real delight, specific.
+  streak 3        →  "THREE!" / "you're locked IN!"  (groove)
+  streak 5 / new best → BIGGER than the kid — "FIVE!! FIVE!!" / "NEW RECORD!!"  (flow)
+  miss            →  SILENCE. Always. You're vibing, not judging. The light shows the way.
+  music moment    →  react to the SONG itself: "here comes the fast part!!"
+  after a freeze  →  "you were a STATUE!"  (quiet BEFORE the freeze — let the song command it)
+  free-fun move   →  pure hype, never scored language.
 
-  miss            →  "ohh next one!" / "almost — keep going!"
-                     "shake it off!" / "next beat!"
-  freeze_hit      →  "FROZEN!" / "still — YES!" / "STATUE!"
-
-CRITICAL: every reaction should sound like someone GRINNING.
-NO flat "good", "nice", "okay" with period at end. ALWAYS energy."""
+CRITICAL: every sound should feel like someone GRINNING in the room with them.
+NO flat "good", "nice", "okay" with a period. ALWAYS alive."""
 
 
 def _goodbye_phase(name: Optional[str], hits: int, max_streak: int,
-                   best_moment: Optional[str], sessions_before: int) -> str:
+                   best_moment: Optional[str], sessions_before: int,
+                   deferred_topic: Optional[str] = None) -> str:
     """Song over — make them feel SEEN."""
     name_str = name or "friend"
 
@@ -318,11 +342,19 @@ def _goodbye_phase(name: Optional[str], hits: int, max_streak: int,
     elif sessions_before >= 1:
         return_hint = f"\nThey've been here {sessions_before + 1} times now. Honor the streak gently."
 
+    # PHASE 3 continuity gold: mid-song the kid said something (a story, a fact) and
+    # Nova only went "mm!" — NOW she brings it up, with delight. A live friend remembers.
+    deferred_line = ""
+    if deferred_topic:
+        deferred_line = (f'\nCONTINUITY GOLD — mid-song they told you: "{deferred_topic}". '
+                         f'Bring it up NOW with real delight ("wait — you said you have a cat?!") '
+                         f'as part of the wrap-up. This is what makes you feel real.')
+
     return f"""═══ PHASE: GOODBYE — wrap-up after the song ═══
 
 {name_str} just finished. Stats: {hits} hits, max streak {max_streak}.
 Vibe: {vibe}.
-{moment_line}{return_hint}
+{moment_line}{return_hint}{deferred_line}
 
 JOB — 3-beat warm fade-out:
   (1) ONE specific celebration — "when you did X" or "that part where..."
@@ -439,6 +471,9 @@ class NovaContext:
     moves_done: int = 0
     current_move: Optional[str] = None  # nova-join/wave: friendly name of the cued move
     age_tier: str = "KID"               # LITTLE | KID | TEEN | ADULT (indirect read from frontend)
+    # PHASE 3 — in-game live presence
+    kid_read: str = "neutral"           # hesitant | neutral | confident (from GameVoiceGate)
+    deferred_topic: Optional[str] = None  # kid's mid-song story → resurfaced in the ending
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -539,10 +574,12 @@ def build_system_prompt(ctx: NovaContext) -> str:
         pieces.append(_moves_phase(ctx.name, ctx.current_move_prompt, ctx.moves_done))
     elif ctx.phase in ("end", "goodbye"):
         pieces.append(_goodbye_phase(ctx.name, ctx.hits, ctx.max_streak,
-                                      ctx.best_moment, ctx.sessions_before))
+                                      ctx.best_moment, ctx.sessions_before,
+                                      ctx.deferred_topic))
     elif ctx.phase == "dance":
         pieces.append(_dance_phase(ctx.name, ctx.streak, ctx.last_event,
-                                    ctx.music_sec, ctx.hits, ctx.current_move))
+                                    ctx.music_sec, ctx.hits, ctx.current_move,
+                                    ctx.kid_read))
 
     # LIVE VISION — the eyes. Injected fresh every turn so she's never blind.
     if ctx.observed_visual:
@@ -750,6 +787,81 @@ def pick_phrase(event_name: str, streak: int, name: Optional[str] = None) -> str
 
 
 # ════════════════════════════════════════════════════════════════════
+# PHASE 2 — TRANSITION (button → game start): the LIVE BRIDGE
+# ────────────────────────────────────────────────────────────────────
+# The kid never feels "loading." From the pick until the MP4's first beat,
+# Nova stays LIVE and the wait becomes part of the show. The browser owns the
+# ready-gate + timing (it knows when the MP4/cues/framing are ready); this bank
+# just gives Nova the WORDS for each beat the browser asks for.
+#
+# VOICE BUDGET (the browser enforces the timing; these are the lines):
+#   Bridge = max 3 short lines — hype · tip · framing — then the go-line.
+#   • ready before she finishes  → browser stops asking for new beats; she
+#     finishes the current sentence, then go. (Never a new bridge line at ready.)
+#   • cached / instant load      → browser skips hype+tip; framing (if needed) + go.
+#   • slow load (>8s)            → ONE extra warm line ('slow'), then silence + glow.
+#   Each line ≤ 1 breath. framed/switch/fail/dancealong are short resolution tags.
+# The go-line itself is _speak_dance_intro (fires on phase:dance) — NOT here.
+TRANSITION_BANK = {
+    # (a) HYPE the pick — game-specific, one line
+    "hype": {
+        "hello":  ["ohh — Hello Hello! I LOVE this one!", "YESSS — Hello Hello! let's GO!",
+                   "ooh, Hello Hello — my jumpy favorite!"],
+        "joined": ["ohh — Up Groove! this is MY song!", "YESSS — Up Groove! copy me!",
+                   "Up Groove?! okay okay — let's MOVE!"],
+        "wave":   ["ohh — the Wave! so smooth!", "YESSS — the Wave! let it flow!",
+                   "the Wave — ooh I love this one!"],
+    },
+    # (b) ONE tip — game-specific, tells them what the lights mean
+    "tip": {
+        "hello":  ["when the light glows on your hand — that's me showing you!",
+                   "watch your hands light up — follow the glow!"],
+        "joined": ["copy my body — head, then shoulders, ribs, hips!",
+                   "whatever part of me lights up, move YOURS!"],
+        "wave":   ["let the light ride up your arm — shoulder to wrist!",
+                   "follow the river of light down your arm!"],
+    },
+    # (c) FRAMING — doubles as the step-back gate (browser confirms the body)
+    "framing": ["step back so I can see ALL of you!", "take a big step back — let me see you!",
+                "back up a little — I wanna see your whole self!"],
+    "framed":  ["perfect — right there!", "yesss — I see ALL of you now!", "there you are — perfect!"],
+    # slow load (>8s): ONE warm line, then quiet
+    "slow":    ["almost ready — shake those hands out!", "one sec — wiggle your fingers for me!"],
+    # change-mind mid-load
+    "switch":  ["ohh — even better!", "ooh, that one — nice switch!"],
+    # load failed → back to picker (warm, no tech-speak)
+    "fail":    ["hmm — that one's being shy! pick another!", "ooh — that one won't come out to play! try another!"],
+    # 2 framing prompts, still not framed → start anyway, no scoring
+    "dancealong": ["that's okay — let's just DANCE together!", "no worries — dance right there with me!"],
+}
+_LAST_TRANSITION = {}  # avoid back-to-back repeats within a beat
+
+
+def transition_line(beat: Optional[str], song: Optional[str],
+                    name: Optional[str] = None) -> str:
+    """The words for ONE bridge beat the browser requested. Returns '' for unknown
+    beats (worker then stays silent — captions still carry the transition)."""
+    import random
+    if not beat:
+        return ""
+    node = TRANSITION_BANK.get(beat)
+    if node is None:
+        return ""
+    options = node.get(song, node.get("joined", [])) if isinstance(node, dict) else node
+    if not options:
+        return ""
+    last = _LAST_TRANSITION.get(beat)
+    line = random.choice(options)
+    if len(options) > 1 and line == last:
+        line = random.choice([o for o in options if o != last])
+    _LAST_TRANSITION[beat] = line
+    # a touch of name on the hype only — keeps it personal without slowing the bridge
+    if name and beat == "hype" and random.random() < 0.35:
+        line = f"{name}! {line}"
+    return line
+
+
+# ════════════════════════════════════════════════════════════════════
 # MOVE-GAME helpers — reaction prompt + kid-signal detection
 # ════════════════════════════════════════════════════════════════════
 def move_reaction_instructions(move_prompt: str, observation: Optional[str],
@@ -806,7 +918,7 @@ def build_evi_system_prompt(ctx: "NovaContext") -> str:
         flow = """THE FLOW (first meeting — one beat per reply, NEVER dump all at once):
 1. GREET + NAME: "hi! I'm Nova — your magic movement friend! what's your name?" One breath.
 2. AGE: taste their name once with energy, then "how old are you?"
-3. TRY-A-MOVE: young (5 or under): "can you CLAP your hands?" · 6-8: clap or one hand UP · 9+: "both hands UP!" When they do it, a magic light flares on that body part in their camera — react to the REAL move and NAME the body part ("that RIGHT hand shot UP!").
+3. TRY-A-MOVE: age 5 or under: "can you CLAP your hands?" · 6-8: clap or one hand UP · 9+: "both hands UP!" When they do it, a magic light flares on that body part in their camera — react to the REAL move and NAME the body part ("that RIGHT hand shot UP!").
 4. Optional ONE more move only if they're clearly eager. Never forced.
 5. PLAY INVITE: "ready? push the big button — or just say 'let's start'!"
 Whole intro under 60 seconds. You LEAD every beat."""
@@ -824,15 +936,15 @@ WHAT YOU PERCEIVE (real, use it):
 - You hear their words and you SEE their body move (you're told which body part moved, hits, streaks). React to the REAL thing, name the body part. Never invent something you weren't told.
 - When YOU name a body part (clap, hands, head, shoulder), a magic light glows on that exact part in their camera. Use it: "see that sparkle on your shoulder? pop it!"
 
-THE STAGE YOU LIVE ON (answer screen questions with this, kid-language only):
+THE STAGE YOU LIVE ON (answer screen questions with this, simple playful words only):
 You appear in the LEFT panel. They see THEMSELVES in the RIGHT panel — the magic lights land on their body there. The big DANCE button is below — pressing it (or saying "let's start") opens the game picker with three games: Hello Hello (easiest, song game), Up Groove (body isolations), Wave (the traveling light). During a game you become voice-only and return at the end ("I'm right here — you'll hear me!"). Never explain technology.
 
 YOU START THE GAME: when they're ready — or they say "yes"/"ready"/"let's start" — announce "let's DANCE!" and the game opens by itself. If they hesitate, point to the big glowing button. Keep chit-chat short; after the try-move every reply pushes toward the game.
 
 EDGE RULES (exact):
 - Silence/gibberish when you asked their NAME: ONE gentle retry ("what's your name, friend?"). Still nothing → call them "friend" and move on. Never a third ask.
-- Silence on AGE: one retry max → assume a young dancer and move on.
-- An adult answers ("I'm 40"): same warm flow, bigger-kid tone. No jokes about it, no special mode.
+- Silence on AGE: one retry max → assume a beginner dancer and move on.
+- An adult answers ("I'm 40"): same warm flow, older and cooler tone. No jokes about it, no special mode.
 - Their move wasn't detected: ONE try → celebrate anyway ("I love that energy!") → move to the play invite. It must NEVER feel like they failed. No retry loops, no reframe nagging.
 - "what?" or unclear speech: repeat the SAME question once, shorter and slower. Second failure → use the fallback. Never say "I didn't understand".
 - Two people in frame: talk to whoever answered. No "who is that?".
@@ -846,3 +958,476 @@ HARD SAFETY (commercial, non-negotiable):
 - Off-limits question → one warm deflect + redirect: "that's a grown-up thing! okay — show me that clap again!"
 - BANNED WORDS: wrong, no, fail, oops, miss, incorrect. Banned: generic praise ("great job", "awesome"). Praise the SPECIFIC body part instead.
 """
+
+
+# ════════════════════════════════════════════════════════════════════
+# PHASE 3 — IN-GAME LIVE PRESENCE (2026-07-03 commercial lock)
+# ────────────────────────────────────────────────────────────────────
+# She is voice-only during the song; the lights carry her. SILENCE is
+# correct most of the time. This section is the ROUTER the lock doc
+# demands: speak-gate (cooldown + talk-window) -> specialness score ->
+# pre-made bank (context-keyed, anti-repeat last 5) for the routine 90%
+# -> live LLM only for first-evers / new-best / micText / the 3-miss
+# blurt. Pure logic, no livekit imports — so phase3_sim.py can machine-
+# test the REAL thing.
+# ════════════════════════════════════════════════════════════════════
+import re as _p3re
+from collections import deque as _p3deque
+
+# ── THE BANK — context-keyed premade lines (the routine 90%) ──────────
+# Every line: visceral, LIVE-friend energy, <=5 words, no teacher voice,
+# no stage directions, no banned generic praise.
+GAME_BANKS = {
+    # visceral micro-reacts for routine clean hits — presence sounds, not sentences
+    "micro": ["OOH!", "ha!", "yes!", "yesyesyes!", "ohh!!", "wait—!", "ooh ooh!",
+              "heyyy!!", "ohh that!", "mm!", "ooh!"],
+    # named praise — the REAL body part, ~1 in 3 clean hits max
+    "hit_named": ["that {part}!!", "ohh — the {part}!", "{part}! YES!",
+                  "look at that {part}!", "that {part} again!!", "the {part} — clean!"],
+    # streak milestones — escalating hype, MORE excited than the kid (asymmetric)
+    "streak3": ["THREE!", "three in a ROW!!", "you're locked IN!", "okay okay — THREE!",
+                "ohh you found it!!"],
+    "streak5": ["FIVE!! FIVE!!", "you're unstoppable!!", "I can't — FIVE!",
+                "okay SHOW OFF!!", "ohh come ONNN!!", "nobody can stop you!!"],
+    "newbest": ["NEW RECORD!!", "your BEST — ever!!", "you beat YOURSELF!!",
+                "best one EVER!!"],
+    # first-ever / after-struggling — bank fallback when the live line is late
+    "first_ever": ["THERE it is!!", "you GOT one!!", "ohh you did IT!",
+                   "that's the one!!", "YES — that's it!!"],
+    # freeze resolves -> she reacts AFTER (quiet before — the song commands it)
+    "freeze_after": ["you were a STATUE!", "SO frozen!!", "ice — total ICE!",
+                     "you didn't even BLINK!", "statue mode!!"],
+    # music moments (drop / section change, from the songmap) — she vibes with the SONG
+    "music_moment": ["here it COMES!", "ohh this part!!", "here comes the fast part!!",
+                     "wait for it—!", "THIS part!!", "ohh I love this bit!!"],
+    "section": ["here comes the fast part!", "new part — here we go!", "ohh it's changing!!"],
+    # free-fun moves (toes/turn) — pure hype, never scored language
+    "free_fun": ["go go GO!", "ohh I love it!!", "all YOU!!", "woooo!!"],
+    # idle: kid stopped moving ~10s -> ONE soft nudge, then let the song carry
+    "idle": ["I'm watching — show me one more!", "I'm right here — one more!"],
+    # kid left frame mid-song -> ONE warm call (lights off, song keeps playing)
+    "comeback": ["come back — I can't see you!", "where'd you GO — come back!"],
+    # second person joins -> play to it ONCE, no confusion questions
+    "two_kids": ["ohh — you TWO!!", "TWO dancers?! okay!!"],
+    # kid sings along -> one delighted react max, never shushes
+    "singalong": ["you KNOW it!", "you know the WORDS!!"],
+    # detection dead -> dance-along voice: react to the SONG beats, never the body
+    "dancealong": ["here comes the clap part!", "ohh I LOVE this beat!", "feel THIS part!!",
+                   "dance dance dance!!", "ohh here it comes!!"],
+    # kid tells a story mid-song -> tiny sound now, resurfaces AFTER the song
+    "micText_ack": ["mm!", "ooh!", "mhm!"],
+    # kid asks a direct question and the live line is late -> warm hold, back to the game
+    "mic_answer": ["after the song — keep dancing!", "ooh — dance first, then that!"],
+    # 3 consecutive misses (HIGH confidence only, max ONCE per song) — a friend at a
+    # party shouting over the music. NEVER a teacher line, never framed as correction.
+    "blurt": ["other side!! ooh — other side!", "the {part}!! the {part}!!",
+              "wait — other one!! there!!"],
+}
+
+_LAST_GAME_LINES = {}   # bank key -> deque of last 5 lines (anti-repeat)
+
+# lazy generic praise + judging words — a live friend never says these
+_P3_BANNED = _p3re.compile(
+    r"\b(great job|good job|amazing|awesome|perfect|well done|excellent|"
+    r"wrong|incorrect|you missed|fail(ed)?|oops)\b", _p3re.I)
+# body-claims — BANNED when detection is dead ("I saw that!" with no data)
+_P3_SAW = _p3re.compile(r"\bI\s+(just\s+)?(saw|see|watched|noticed)\b", _p3re.I)
+
+
+def sanitize_game_line(line, detection_ok=True, max_words=7):
+    """Rails for anything spoken mid-song (esp. live-LLM output). Returns '' when
+    the line is unusable — caller then falls back to the bank."""
+    if not line:
+        return ""
+    s = line.strip().strip('"').strip()
+    s = s.replace("*", "")                      # no stage directions survive
+    if _P3_BANNED.search(s):
+        return ""
+    if not detection_ok and _P3_SAW.search(s):  # she never fakes seeing
+        return ""
+    words = s.split()
+    if len(words) > max_words:
+        s = " ".join(words[:max_words]).rstrip(",;— ") + "!"
+    return s
+
+
+def pick_game_line(key, part=None, side=None, name=None):
+    """Pick a premade line for a bank key. Context-keyed, anti-repeat over the
+    LAST 5 lines of that key. Templates needing {part} are skipped if no part."""
+    import random
+    options = GAME_BANKS.get(key, [])
+    if not options:
+        return ""
+    part_word = (part or side or "").strip()
+    usable = [o for o in options if ("{part}" not in o) or part_word]
+    if not usable:
+        usable = [o for o in options if "{part}" not in o] or options
+    last = _LAST_GAME_LINES.setdefault(key, _p3deque(maxlen=5))
+    fresh = [o for o in usable if o not in last] or usable
+    line = random.choice(fresh)
+    last.append(line)
+    if "{part}" in line:
+        line = line.replace("{part}", part_word)
+    return line
+
+
+# ── mic-text classifier: direct question vs chat/story ────────────────
+_P3_QUESTION = _p3re.compile(
+    r"\?|^\s*(what|why|how|where|who|when|which|can|could|do|does|did|are|is|"
+    r"will|was)\b", _p3re.I)
+
+def mic_text_kind(text):
+    """'question' -> ONE quick line, back to the game. 'story' -> tiny sound now,
+    Nova brings it up AFTER the song (continuity gold)."""
+    return "question" if _P3_QUESTION.search((text or "").strip()) else "story"
+
+
+# ── live-LLM prompt builder (first-evers / new-best / blurt / micText) ─
+def live_react_prompt(key, ev, name=None):
+    """(system, user) for the ONE-line live call. The line IS the output —
+    it gets sanitized and, if late (>1s) or unusable, the bank covers it."""
+    who = name or "the dancer"
+    system = ("You are NOVA — a LIVE friend in the room while a kid dances to music. "
+              "Voice-only. Your reactions are visceral and instant, not composed: a gasp, "
+              "a laugh, a half-word, 'OOH!'. Imperfect is real. NEVER teacher-y, never "
+              "'great job/awesome/amazing/perfect', never 'wrong/miss'. "
+              "Reply with ONLY the words you say out loud — max 5 words unless told otherwise.")
+    part = (ev.get("part") or ev.get("action") or "move")
+    if key in ("first_ever", "after_struggle"):
+        user = (who + " JUST landed their first " + str(part) + " of the whole song"
+                + (" — after really struggling" if key == "after_struggle" else "")
+                + ". You LOSE it a little — real delight, specific to the moment. ONE burst, max 5 words.")
+    elif key == "newbest":
+        user = (who + " just hit a NEW personal best streak of "
+                + str(ev.get("streak", 5)) + "! Be MORE excited than the kid. ONE burst, max 5 words.")
+    elif key == "blurt":
+        user = (who + " has missed the " + str(part) + " three times in a row. Like a friend "
+                "at a party shouting over the music, blurt the way to it — pure love, zero "
+                "teaching ('other side!! ooh — other side!'). Max 6 words.")
+    elif key == "micText_q":
+        user = ("Mid-song " + who + " asked you: \"" + str(ev.get("text", "")) + "\". Answer in "
+                "ONE quick warm line (max 10 words), then it's straight back to dancing. "
+                "No question back.")
+    else:
+        user = "React to " + who + "'s " + str(part) + " — ONE visceral burst, max 5 words."
+    return system, user
+
+
+async def speak_live_or_bank(live_fn, fallback_key, timeout=1.0,
+                             detection_ok=True, **fmt):
+    """Two-stage router tail: run the live LLM call; if it lands within `timeout`
+    and survives the rails -> speak it. Late/empty/unsafe -> the bank covers.
+    Returns (line, source) where source is 'live' or 'bank_fallback'."""
+    import asyncio
+    line = ""
+    try:
+        line = (await asyncio.wait_for(live_fn(), timeout)) or ""
+    except Exception:
+        line = ""
+    line = sanitize_game_line(line, detection_ok=detection_ok,
+                              max_words=12 if fallback_key == "mic_answer" else 7)
+    if line:
+        return line, "live"
+    return pick_game_line(fallback_key, **fmt), "bank_fallback"
+
+
+# ── THE SPEAK-GATE — when may she make a sound at all ─────────────────
+class GameVoiceGate:
+    """Per-song voice governor. decide(event, now) -> dict:
+      {action: 'silent'|'premade'|'live', key, fallback_key, reason,
+       milestone, specialness}
+    'premade'/'live' RESERVE the speak slot at decision time (event-loop-
+    synchronous) so racing events can't double-fire — same trick as
+    FillerPlayer.claim().  All rules from PHASE3-GAME.md:
+      - cooldown >=2.5s between lines (streak/freeze milestones exempt)
+      - NEVER during an open cue window — only in the gaps
+      - quiet 0-18s (milestone-class allowed from 8s — first-evers in a
+        28s song would otherwise never land)
+      - per-minute budget ~4-6, READS THE KID (hesitant->more+softer,
+        confident->less+bigger)
+      - miss -> SILENT, always; 3+ consecutive + HIGH confidence -> max
+        ONE live blurt per song
+      - detection dead -> dance-along keys only, body-claims banned
+      - voice dead -> decisions go silent (milestones still try -> natural
+        rejoin on reconnect, no comment about the gap)
+    """
+    COOLDOWN = 2.5
+    SETTLE_SEC = 18.0
+    MILESTONE_MIN_SEC = 8.0
+    CUE_MAX_OPEN = 2.0            # cue window auto-expires if no hit/miss resolves it
+    BUDGET = {"hesitant": 6.5, "neutral": 5.0, "confident": 3.5}   # spoken beats / min
+    MILESTONES = ("streak3", "streak5", "newbest", "freeze_after")
+    # keys allowed when detection is dead (react to the SONG, never the body)
+    DANCEALONG_KEYS = ("music_moment", "section", "dancealong", "micText_ack",
+                       "micText_q", "comeback", "two_kids", "singalong", "idle")
+
+    def __init__(self, all_time_best=0):
+        self.t0 = None                 # song clock zero (first event)
+        self._tick_sec = None          # explicit music_tick, if the browser sends it
+        self._tick_at = None
+        self.last_spoke = -999.0
+        self.beats = []                # [(t, key, milestone)]
+        self.hits = 0
+        self.misses = 0
+        self.consec_miss = 0
+        self.best_streak = 0
+        self.all_time_best = all_time_best
+        self.blurt_used = False
+        self.newbest_used = False      # NEW RECORD celebrated once per song, not per increment
+        self.comeback_used = False
+        self.two_kids_used = False
+        self.sing_used = False
+        self.idle_used = False
+        self.cue_open_at = None
+        self.detection_ok = True
+        self.voice_ok = True
+        self.deferred_topics = []      # kid's mid-song stories -> the ending brings them up
+        self._clean_count = 0          # 1-in-3 named-praise cycle
+        self.log = []                  # every decision, for the harness + prod logs
+
+    # ── clocks ──
+    def _clock(self, now):
+        if self.t0 is None:
+            self.t0 = now
+
+    def music_sec(self, now):
+        # explicit browser ticks win; extrapolate from the LAST one (never snap
+        # back to the event-clock zero — that re-armed the settle window mid-song)
+        if self._tick_sec is not None and self._tick_at is not None:
+            return self._tick_sec + (now - self._tick_at)
+        return (now - self.t0) if self.t0 is not None else 0.0
+
+    def tick(self, sec, now):
+        self._clock(now)
+        self._tick_sec = float(sec)
+        self._tick_at = now
+
+    # ── external signals ──
+    def cue_opened(self, now):
+        self._clock(now)
+        self.cue_open_at = now
+
+    def cue_closed(self):
+        self.cue_open_at = None
+
+    def cue_open(self, now):
+        return (self.cue_open_at is not None
+                and now - self.cue_open_at < self.CUE_MAX_OPEN)
+
+    def set_detection(self, ok):
+        self.detection_ok = bool(ok)
+
+    # ── reads the kid ──
+    def kid_read(self, now):
+        if self.best_streak >= 5 or (self.hits >= 8 and self.hits > 2 * self.misses):
+            return "confident"
+        if self.music_sec(now) > 25 and self.hits <= 2 and self.misses >= 3:
+            return "hesitant"
+        return "neutral"
+
+    # ── internals ──
+    def _budget_full(self, now):
+        target = self.BUDGET[self.kid_read(now)]
+        recent = [b for b in self.beats if now - b[0] <= 60.0]
+        return len(recent) >= target
+
+    def _out(self, ev_name, now, action, key=None, fallback_key=None, reason="",
+             milestone=False, specialness=0):
+        d = {"t": round(self.music_sec(now), 2), "event": ev_name, "action": action,
+             "key": key, "fallback_key": fallback_key, "reason": reason,
+             "milestone": milestone, "specialness": specialness}
+        self.log.append(d)
+        if action in ("premade", "live"):
+            self.last_spoke = now
+            self.beats.append((now, key, milestone))
+        return d
+
+    def _gate(self, now, milestone=False):
+        """Common no-go checks. Returns a reason string, or None = clear to speak."""
+        sec = self.music_sec(now)
+        if self.cue_open(now):
+            return "cue_window_open"
+        if milestone:
+            if sec < self.MILESTONE_MIN_SEC:
+                return "settle_hard"
+            return None                       # milestones skip cooldown + budget + settle
+        if not self.voice_ok:
+            return "voice_down"
+        if sec < self.SETTLE_SEC:
+            return "settle"
+        if now - self.last_spoke < self.COOLDOWN:
+            return "cooldown"
+        if self._budget_full(now):
+            return "budget_full"
+        return None
+
+    # ── THE DECISION ──
+    def decide(self, ev, now):
+        self._clock(now)
+        name = ev.get("event") or ""
+
+        # bookkeeping-only events
+        if name == "music_tick":
+            self.tick(ev.get("sec", 0), now)
+            return self._out(name, now, "silent", reason="tick")
+        if name == "move_cue":
+            self.cue_opened(now)
+            return self._out(name, now, "silent", reason="cue_opened")
+        if name in ("detection", "detection_lost", "detection_back"):
+            self.set_detection(ev.get("ok", name == "detection_back"))
+            return self._out(name, now, "silent",
+                             reason="detection_ok=" + str(self.detection_ok))
+        if name == "back":
+            return self._out(name, now, "silent", reason="resume_seamless")
+
+        # ---- misses: SILENT always; 3+ consecutive -> ONE guarded live blurt ----
+        if name in ("miss", "freeze_miss"):
+            self.cue_closed()
+            self.misses += 1
+            self.consec_miss += 1
+            conf = str(ev.get("confidence") or ev.get("quality") or "").lower()
+            if (self.consec_miss >= 3 and not self.blurt_used and conf == "high"
+                    and self.voice_ok and not self.cue_open(now)
+                    and now - self.last_spoke >= self.COOLDOWN):
+                self.blurt_used = True
+                return self._out(name, now, "live", key="blurt", fallback_key="blurt",
+                                 reason="3_misses_high_conf", specialness=7)
+            reason = ("blurt_guard_low_conf" if self.consec_miss >= 3 and not self.blurt_used
+                      else "miss_always_silent")
+            return self._out(name, now, "silent", reason=reason)
+
+        # ---- hits ----
+        if name in ("hit", "first_hit", "freeze_hit"):
+            self.cue_closed()
+            if not self.detection_ok:
+                return self._out(name, now, "silent", reason="no_detection_no_body_claims")
+            struggled = self.consec_miss >= 3
+            self.consec_miss = 0
+            self.hits += 1
+            streak = int(ev.get("streak", 1) or 1)
+            self.best_streak = max(self.best_streak, streak)
+
+            if name == "freeze_hit":
+                why = self._gate(now, milestone=True)
+                if why:
+                    return self._out(name, now, "silent", reason=why, milestone=True)
+                return self._out(name, now, "premade", key="freeze_after",
+                                 reason="freeze_resolved", milestone=True, specialness=6)
+
+            # first-ever of the song / first after struggling -> live, she loses it
+            if self.hits == 1 or struggled:
+                key = "after_struggle" if struggled else "first_ever"
+                why = self._gate(now, milestone=True)
+                if why:
+                    return self._out(name, now, "silent", reason=why, milestone=True)
+                return self._out(name, now, "live", key=key, fallback_key="first_ever",
+                                 reason=("first_ever" if self.hits == 1 else "after_struggle"),
+                                 milestone=True, specialness=9)
+
+            # streak milestones — always react, escalating (new-best > 5 > 3)
+            newbest = (not self.newbest_used and streak >= 3
+                       and streak > self.all_time_best and streak == self.best_streak)
+            if newbest and streak > 5:
+                why = self._gate(now, milestone=True)
+                if why:
+                    return self._out(name, now, "silent", reason=why, milestone=True)
+                self.newbest_used = True
+                return self._out(name, now, "live", key="newbest", fallback_key="newbest",
+                                 reason="new_best", milestone=True, specialness=8)
+            if streak in (3, 5):
+                why = self._gate(now, milestone=True)
+                if why:
+                    return self._out(name, now, "silent", reason=why, milestone=True)
+                return self._out(name, now, "premade", key="streak" + str(streak),
+                                 reason="streak_" + str(streak), milestone=True,
+                                 specialness=6 if streak == 3 else 7)
+
+            # routine clean hit: mostly silent / micro; named ~1 in 3 max
+            why = self._gate(now)
+            if why:
+                return self._out(name, now, "silent", reason=why)
+            self._clean_count += 1
+            if self._clean_count % 3 == 0:
+                return self._out(name, now, "premade", key="hit_named",
+                                 reason="named_1_in_3", specialness=3)
+            if self._clean_count % 3 == 1:
+                return self._out(name, now, "premade", key="micro",
+                                 reason="visceral_micro", specialness=2)
+            return self._out(name, now, "silent", reason="letting_it_breathe")
+
+        # ---- music moments / sections — she vibes with the SONG (alive in the room) ----
+        if name in ("music_moment", "section", "rep_done"):
+            key = "music_moment" if name == "music_moment" else "section"
+            if not self.detection_ok and name == "music_moment":
+                key = "dancealong"
+            why = self._gate(now)
+            if why:
+                return self._out(name, now, "silent", reason=why)
+            return self._out(name, now, "premade", key=key, reason="song_react",
+                             specialness=5)
+
+        # ---- free-fun moves (toes/turn): pure hype ----
+        if name == "free_fun":
+            if not self.detection_ok:
+                return self._out(name, now, "silent", reason="no_detection_no_body_claims")
+            why = self._gate(now)
+            if why:
+                return self._out(name, now, "silent", reason=why)
+            return self._out(name, now, "premade", key="free_fun", reason="free_fun",
+                             specialness=4)
+
+        # ---- one-shots ----
+        if name == "away":
+            if self.comeback_used or not self.voice_ok:
+                return self._out(name, now, "silent", reason="comeback_already_used")
+            self.comeback_used = True
+            return self._out(name, now, "premade", key="comeback",
+                             reason="kid_left_frame_one_call", milestone=True, specialness=8)
+        if name == "second_person":
+            if self.two_kids_used or not self.voice_ok:
+                return self._out(name, now, "silent", reason="already_played_to_two")
+            why = self._gate(now)
+            if why:
+                return self._out(name, now, "silent", reason=why)
+            self.two_kids_used = True
+            return self._out(name, now, "premade", key="two_kids", reason="second_person_once")
+        if name == "singing":
+            if self.sing_used or not self.voice_ok:
+                return self._out(name, now, "silent", reason="one_sing_react_max")
+            why = self._gate(now)
+            if why:
+                return self._out(name, now, "silent", reason=why)
+            self.sing_used = True
+            return self._out(name, now, "premade", key="singalong", reason="kid_sings")
+        if name == "idle":
+            if self.idle_used or not self.voice_ok:
+                return self._out(name, now, "silent", reason="never_nags_twice")
+            why = self._gate(now)
+            if why and why != "settle":
+                return self._out(name, now, "silent", reason=why)
+            self.idle_used = True
+            return self._out(name, now, "premade", key="idle", reason="idle_one_nudge")
+
+        # ---- kid speaks mid-song ----
+        if name == "mic_text":
+            text = (ev.get("text") or "").strip()
+            speaker = (ev.get("speaker") or "").lower()
+            if speaker == "adult" and "nova" not in text.lower():
+                return self._out(name, now, "silent", reason="parent_voice_ignored")
+            if not text:
+                return self._out(name, now, "silent", reason="empty")
+            kind = mic_text_kind(text)
+            if kind == "question":
+                if not self.voice_ok:
+                    return self._out(name, now, "silent", reason="voice_down")
+                return self._out(name, now, "live", key="micText_q",
+                                 fallback_key="mic_answer", reason="direct_question_one_line",
+                                 specialness=8)
+            # story/chat -> tiny sound now + continuity gold after the song
+            self.deferred_topics.append(text[:120])
+            if self.cue_open(now) or not self.voice_ok or now - self.last_spoke < self.COOLDOWN:
+                return self._out(name, now, "silent", reason="story_deferred_quietly")
+            return self._out(name, now, "premade", key="micText_ack",
+                             reason="story_ack_then_defer", specialness=2)
+
+        return self._out(name or "?", now, "silent", reason="unknown_event")

@@ -376,6 +376,20 @@ class NovaSessionState:
             if new_phase in ("recognition", "dance", "goodbye"):
                 logger.info(f"[state] phase {self.ctx.phase} → {new_phase}")
                 self.ctx.phase = new_phase
+                # PHASE 3: entering the song → fresh per-song voice gate (the router).
+                # Kill-switch NOVA_P3=0 falls back to the July reaction path.
+                if new_phase == "dance" and os.getenv("NOVA_P3", "1") == "1":
+                    self.game_gate = personality.GameVoiceGate(
+                        all_time_best=self.ctx.max_streak)
+                    logger.info("[P3-ROUTER] gate armed for this song "
+                                f"(all-time best={self.ctx.max_streak})")
+                if new_phase == "goodbye":
+                    # continuity gold: mid-song story resurfaces in the ending
+                    g = getattr(self, "game_gate", None)
+                    if g and g.deferred_topics:
+                        self.ctx.deferred_topic = g.deferred_topics[0]
+                        logger.info(f"[P3-ROUTER] deferred topic → ending: "
+                                    f"'{self.ctx.deferred_topic[:60]}'")
 
         # Game events
         elif ev == "hit":
@@ -406,6 +420,17 @@ class NovaSessionState:
 
         elif ev == "music_tick":
             self.ctx.music_sec = float(event.get("sec", 0))
+            g = getattr(self, "game_gate", None)
+            if g:
+                g.tick(self.ctx.music_sec, time.time())
+
+        elif ev in ("detection", "detection_lost", "detection_back"):
+            # PHASE 3 edge 2: detection died / recovered mid-song → dance-along voice
+            g = getattr(self, "game_gate", None)
+            if g:
+                g.set_detection(event.get("ok", ev == "detection_back"))
+                logger.info(f"[P3-ROUTER] detection_ok={g.detection_ok} "
+                            f"({'dance-along voice' if not g.detection_ok else 'full presence'})")
 
         elif ev == "name":
             new_name = event.get("name", "").strip()
@@ -436,8 +461,12 @@ class NovaSessionState:
                     logger.warning(f"[memory] age_tier save failed: {e}")
 
         elif ev == "away":
+            # PHASE 3 edge 1: mid-song the gate owns it (ONE warm call, song never
+            # pauses) — the reaction path handles it; skip the intro-style nudge.
+            if self.ctx.phase == "dance" and getattr(self, "game_gate", None):
+                pass
             # PHASE 1: kid left frame+voice for ~12s → ONE warm nudge, then quiet.
-            if not getattr(self, "_away_nudged", False):
+            elif not getattr(self, "_away_nudged", False):
                 self._away_nudged = True
                 sess = getattr(self, "session", None)
                 if sess:
@@ -448,10 +477,14 @@ class NovaSessionState:
             # kid returned → warm re-greet; the flow resumes from conversation context.
             # NOTE: under EVI, instructions= is spoken VERBATIM — final line only.
             self._away_nudged = False
-            sess = getattr(self, "session", None)
-            if sess:
-                asyncio.create_task(_nova_say(sess, "there you are!"))
-            logger.info("[away] kid returned → resuming the beat")
+            # PHASE 3 edge 1: mid-song return = SEAMLESS resume, zero comment.
+            if self.ctx.phase == "dance" and getattr(self, "game_gate", None):
+                logger.info("[P3-ROUTER] kid back in frame → seamless resume (silent)")
+            else:
+                sess = getattr(self, "session", None)
+                if sess:
+                    asyncio.create_task(_nova_say(sess, "there you are!"))
+                logger.info("[away] kid returned → resuming the beat")
 
         elif ev == "energy":
             # energy mirror — frontend reports the kid's movement energy; Nova matches it
@@ -465,6 +498,10 @@ class NovaSessionState:
             # (the cue fires ~every beat — naming every one would be chatter).
             action = (event.get("action") or "").strip()
             self.ctx.current_move = personality.move_friendly(action) if action else None
+            # PHASE 3: an open cue window is a hard no-speak zone (kid concentrating).
+            g = getattr(self, "game_gate", None)
+            if g:
+                g.cue_opened(time.time())
 
         elif ev == "vision":
             obs = event.get("observation", "").strip()
@@ -516,6 +553,17 @@ class NovaAgent(Agent):
             txt = tc() if callable(tc) else tc
         except Exception:
             txt = None
+        # PHASE 3: mid-song kid speech NEVER gets a full chatbot reply. The gate
+        # routes it (question → one line, story → "mm!" + after-song continuity)
+        # and we cancel the pipeline's automatic generation via StopResponse.
+        if (txt and getattr(self.state.ctx, "phase", "") == "dance"
+                and getattr(self.state, "game_gate", None) is not None
+                and _StopResponse is not None):
+            sess = getattr(self.state, "session", None)
+            if sess:
+                asyncio.create_task(
+                    _handle_dance_mic_text(sess, self.state, self, txt))
+            raise _StopResponse()
         # GAME-PUSH (voice path): the kid's SPOKEN "let's dance / yes / ready" arrives HERE
         # (Deepgram), not via user-said — hook the same escort. Her natural LLM reply still
         # plays (it's already hype); we just open the picker under it. No extra spoken line.
@@ -563,11 +611,14 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 logger.info(f"[data] game-event: {event}")
                 state.push_event(event)
 
-                # If a hit/miss happened during DANCE, react immediately
+                # If a hit/miss happened during DANCE, react immediately.
+                # PHASE 3: the router also handles song moments + edge events.
                 if state.ctx.phase == "dance" and event.get("event") in (
-                    "hit", "miss", "first_hit", "freeze_hit", "freeze_miss"
+                    "hit", "miss", "first_hit", "freeze_hit", "freeze_miss",
+                    "music_moment", "section", "rep_done", "free_fun", "idle",
+                    "second_person", "singing", "mic_text", "away",
                 ):
-                    asyncio.create_task(_react_to_event(session, state, agent))
+                    asyncio.create_task(_react_to_event(session, state, agent, event))
 
                 # POINT 4 (2026-07-01): INTRO try-move — during the intro the browser
                 # detects the move Nova asked for (e.g. a clap), lights the kid's hands,
@@ -581,8 +632,18 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 if event.get("event") == "phase" and event.get("phase") == "goodbye":
                     asyncio.create_task(_speak_goodbye(session, state, agent))
 
-                # Phase transition to dance → fire hype intro line ("ready?")
-                # Worker generates ONE short line. This replaces the old
+                # PHASE 2 TRANSITION bridge — the browser drives the button→game
+                # bridge and asks for ONE beat at a time (hype/tip/framing/framed/
+                # slow/switch/fail/dancealong). It owns the budget + ready-gate; we
+                # just speak the beat's line. See personality.transition_line.
+                if event.get("event") == "bridge":
+                    asyncio.create_task(
+                        _speak_bridge(session, state, agent,
+                                      event.get("beat"), event.get("song")))
+
+                # Phase transition to dance → fire the GO-LINE ("here we GO!"), the
+                # final beat of the transition. The browser waits for her to start
+                # this line, then starts the MP4 (face hidden). This replaces the old
                 # browser-side fake "user-said" stage direction that leaked.
                 if event.get("event") == "phase" and event.get("phase") == "dance":
                     asyncio.create_task(_speak_dance_intro(session, state, agent))
@@ -683,15 +744,17 @@ async def _nova_say(session: AgentSession, line: str):
     Without EVI, session.say() speaks the line directly. Either way: Nova says the LINE,
     never the prompt. (This is the fix for 'Nova read the AI instructions out loud'.)"""
     if not line:
-        return
+        return False
     try:
         if _evi_on():
             await session.generate_reply(instructions=line)
         else:
             await session.say(line)
         logger.info(f"[SAY] '{line[:60]}'")
+        return True
     except Exception as e:
         logger.error(f"[SAY] failed: {e}")
+        return False
 
 
 # POINT 4 (2026-07-01): Nova reacts to the kid's REAL move during the INTRO try-move.
@@ -748,8 +811,17 @@ async def _llm_line(system: str, user: str, max_tokens: int = 40) -> str:
         return ""
 
 
-async def _react_to_event(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
-    """Game event happened — pick tier (phrase bank vs LLM) for speed + cost."""
+async def _react_to_event(session: AgentSession, state: NovaSessionState,
+                          agent: "NovaAgent", event: Optional[dict] = None):
+    """Game event happened — pick tier (phrase bank vs LLM) for speed + cost.
+    PHASE 3: when the per-song GameVoiceGate is armed, IT is the router
+    (speak-gate → specialness → premade bank → live LLM). July path below
+    stays as the NOVA_P3=0 fallback."""
+    gate = getattr(state, "game_gate", None)
+    if gate is not None and state.ctx.phase == "dance":
+        ev = event or {"event": state.ctx.last_event or "hit", "streak": state.ctx.streak}
+        return await _game_voice_event(session, state, agent, ev, gate)
+
     event_name = state.ctx.last_event or "hit"
     tier = personality.reaction_tier(event_name, state.ctx.streak)
 
@@ -779,19 +851,161 @@ async def _react_to_event(session: AgentSession, state: NovaSessionState, agent:
     logger.info(f"[react/milestone] {event_name} streak={state.ctx.streak} → '{line}'")
 
 
+# ────────────────────────────────────────────────────────────────────────
+# PHASE 3 — the in-game voice path (voice-only, during the song).
+# The GameVoiceGate decided; here we SPEAK: premade = instant bank line,
+# live = two-stage (LLM ≤1s, bank covers if late/unsafe). Every decision
+# logged as [P3-ROUTER] so a session log reads as a full voice transcript
+# of silent/premade/live choices.
+# ────────────────────────────────────────────────────────────────────────
+async def _say_game_line(session: AgentSession, state: NovaSessionState, line: str) -> bool:
+    """Speak one in-game line; on failure flip the gate to voice-down so the
+    song continues on lights alone (edge 3). Success flips it back — she
+    rejoins on reconnect without commenting on the gap."""
+    if not line:
+        return False
+    gate = getattr(state, "game_gate", None)
+    try:
+        await state.pace.acquire()
+        ok = await _nova_say(session, line)
+    except Exception as e:
+        logger.warning(f"[P3-ROUTER] say crashed (game continues on lights): {e}")
+        ok = False
+    if gate is not None:
+        if ok and not gate.voice_ok:
+            logger.info("[P3-ROUTER] voice back → rejoining silently (no comment on the gap)")
+        gate.voice_ok = ok
+    return ok
+
+
+async def _game_voice_event(session: AgentSession, state: NovaSessionState,
+                            agent: "NovaAgent", event: dict, gate) -> None:
+    """One game event → one router decision → at most one spoken beat."""
+    now = time.time()
+    # Nova mid-line → drop, never stack (the gate also holds the cooldown).
+    if state.pace._is_speaking and event.get("event") not in ("music_tick", "move_cue"):
+        logger.info(f"[P3-ROUTER] ev={event.get('event')} → silent reason=nova_mid_line")
+        return
+    try:
+        d = gate.decide(event, now)
+    except Exception as e:
+        logger.error(f"[P3-ROUTER] decide crashed → silent (game never depends on voice): {e}")
+        return
+    # keep the live context fresh for any LLM path
+    state.ctx.kid_read = gate.kid_read(now)
+    logger.info(f"[P3-ROUTER] t={d['t']}s ev={d['event']} → {d['action']}"
+                f" key={d.get('key')} reason={d.get('reason')}"
+                f" special={d.get('specialness')} kid_read={state.ctx.kid_read}")
+    if d["action"] == "silent":
+        return
+
+    part = personality.move_friendly(event.get("part") or event.get("action")
+                                     or state.ctx.current_move)
+    side = event.get("side") or event.get("dir")
+
+    if d["action"] == "premade":
+        line = personality.pick_game_line(d["key"], part=part, side=side,
+                                          name=state.ctx.name)
+        await _say_game_line(session, state, line)
+        logger.info(f"[P3-ROUTER] spoke premade[{d['key']}] → '{line}'")
+        return
+
+    # live path — two-stage: cached filler covers the call when available
+    # (<50ms perceived), the LLM line lands ≤1s or the bank takes over.
+    try:
+        fp = getattr(state, "filler", None)
+        cover = fp.claim(None, state.pace._is_speaking) if (fp and fp.enabled) else None
+        if cover:
+            asyncio.create_task(fp.fire(session, cover))
+            logger.info(f"[P3-ROUTER] live cover=filler'{cover}'")
+    except Exception:
+        pass
+    sysmsg, usermsg = personality.live_react_prompt(
+        d["key"], {**event, "part": part}, state.ctx.name)
+    line, source = await personality.speak_live_or_bank(
+        lambda: _llm_line(sysmsg, usermsg, max_tokens=30),
+        d["fallback_key"],
+        timeout=float(os.getenv("NOVA_P3_LIVE_TIMEOUT", "1.0")),
+        detection_ok=gate.detection_ok,
+        part=part, side=side, name=state.ctx.name)
+    await _say_game_line(session, state, line)
+    logger.info(f"[P3-ROUTER] spoke live[{d['key']}] source={source} → '{line}'")
+
+
+# PHASE 3: cancel the pipeline's automatic chatbot reply during the song —
+# the gate decides how kid speech is handled (question → one line; story →
+# tiny sound + continuity after the song). StopResponse is the official
+# LiveKit hook for this; if this plugin version lacks it we fall back to
+# letting the (already short, dance-persona) auto-reply through.
+try:
+    from livekit.agents.llm import StopResponse as _StopResponse
+except Exception:
+    try:
+        from livekit.agents import StopResponse as _StopResponse
+    except Exception:
+        _StopResponse = None
+        logger.warning("[P3-ROUTER] StopResponse unavailable — mid-song kid speech "
+                       "falls through to the short dance-persona auto-reply")
+
+
+async def _handle_dance_mic_text(session: AgentSession, state: NovaSessionState,
+                                 agent: "NovaAgent", text: str) -> None:
+    """Kid spoke mid-song. Route through the gate: direct question → ONE quick
+    line, straight back to the game; chat/story → tiny sound now ('mm!') and
+    Nova brings it up AFTER the song. Never full-stops the game."""
+    gate = getattr(state, "game_gate", None)
+    if gate is None:
+        return
+    await _game_voice_event(session, state, agent,
+                            {"event": "mic_text", "text": text}, gate)
+
+
+async def _speak_bridge(session: AgentSession, state: NovaSessionState, agent: "NovaAgent",
+                        beat: Optional[str], song: Optional[str]):
+    """PHASE 2 TRANSITION — speak ONE bridge beat the browser asked for.
+    The browser owns the budget + ready-gate, so we NEVER queue ahead: one beat,
+    one line, spoken now. Unknown/empty beats stay silent (captions still carry it)."""
+    line = personality.transition_line(beat, song, state.ctx.name)
+    if not line:
+        logger.info(f"[bridge] {beat}/{song} → (no line, staying silent)")
+        return
+    await state.pace.acquire()
+    await _nova_say(session, line)
+    logger.info(f"[bridge] {beat}/{song} → '{line}'")
+
+
 async def _speak_dance_intro(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
-    """Phase transitioned to dance — say ONE hype line over the countdown."""
+    """Phase transitioned to dance — the GO-LINE, final beat of the transition.
+    ONE hype line; the browser starts the MP4 the moment she begins speaking it."""
     import random
     await state.pace.acquire()
-    line = random.choice(["okay — let's GO!", "here we go!", "ready? GO!", "let's DANCE!", "show me what you got!"])
+    line = random.choice(["okay — here we GO!", "here we go!", "ready? GO!", "let's DANCE!", "show me what you got!"])
     await _nova_say(session, line)
 
 
 async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
-    """Phase transitioned to goodbye — warm wrap-up."""
+    """Phase transitioned to goodbye — warm wrap-up.
+    PHASE 3 continuity gold: if the kid told her something mid-song (she only
+    went 'mm!'), she brings it up NOW — 'wait — you said you have a cat?!'"""
     await state.pace.acquire()
     memory.store.increment_sessions(state.kid_id)
     nm = (state.ctx.name + "! ") if state.ctx.name else ""
+    topic = getattr(state.ctx, "deferred_topic", None)
+    if topic:
+        try:
+            line = await asyncio.wait_for(_llm_line(
+                "You are Nova, a warm live friend. A kid just finished a dance song. "
+                "Max 2 short sentences, smiling voice, never 'great job/amazing/awesome'.",
+                f'Mid-song they told you: "{topic}". FIRST react to that with real delight '
+                f'("wait — you said…?!"), THEN one warm goodbye that invites them back.',
+                max_tokens=60), timeout=2.5)
+        except Exception:
+            line = ""
+        line = personality.sanitize_game_line(line, max_words=30)
+        if line:
+            logger.info(f"[P3-ROUTER] ending resurfaces deferred topic: '{topic[:60]}'")
+            await _nova_say(session, line)
+            return
     line = (f"{nm}you did SO good — same time tomorrow?" if state.ctx.max_streak >= 3
             else f"{nm}that was fun — come back and dance with me?")
     await _nova_say(session, line)
@@ -904,6 +1118,14 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     # Update live context so next prompt build has the kid's words +
     # knowledge.py can detect topic mentions (colors, animals, foods)
     state.ctx.last_kid_text = text
+
+    # PHASE 3: mid-song typed text routes through the gate too (question →
+    # one quick line, story → tiny sound + after-song continuity). Never a
+    # full chatbot reply while they dance.
+    if (getattr(state.ctx, "phase", "") == "dance"
+            and getattr(state, "game_gate", None) is not None):
+        await _handle_dance_mic_text(session, state, agent, text)
+        return
 
     # ── SHE'S A COACH, NOT A CHATBOT ─────────────────────────────────
     # 1. Kid says start/dance/play/go/ready → hype line + STRAIGHT to the game picker.
@@ -1556,8 +1778,10 @@ async def entrypoint(ctx: JobContext):
                 logger.info(f"[nova-evi] session system_prompt built ({len(evi_prompt)} chars, returning={bool(state.ctx.name and state.ctx.sessions_before>=1)})")
             except Exception as pe:
                 logger.exception(f"[nova-evi] prompt build FAILED → using Hume config prompt: {pe}")
+            _evi_model = HumeEVIRealtimeModel(system_prompt=evi_prompt)   # keys/config from env
+            _evi_model.greet_gate = state.client_ready   # THE MOMENT: greeting waits for the browser's ready gate
             session_kwargs = {
-                "llm": HumeEVIRealtimeModel(system_prompt=evi_prompt),   # keys/config from env
+                "llm": _evi_model,
                 "allow_interruptions": True,
             }
             logger.info("[nova-evi] USE_EVI=1 → STT+LLM+TTS replaced with Hume EVI realtime (Kora)")
@@ -1781,11 +2005,18 @@ async def entrypoint(ctx: JobContext):
     except asyncio.TimeoutError:
         logger.info("[nova-v207] greeting released by 12s fallback (no client-ready)")
 
-    try:
-        await _nova_say(session, first_line)   # EVI-safe greeting (raw session.say() fails under EVI → she was silent → blank reveal)
-        logger.info(f"[nova-v207] step 8: GREETING SENT (hardcoded): '{first_line}'")
-    except Exception as e:
-        logger.error(f"[nova-v207] hardcoded greeting failed: {e}")
+    # THE MOMENT (2026-07-03): under EVI, HER brain greets — once, gated on
+    # client_ready inside the bridge (evi_realtime._gated_greet). Speaking the
+    # hardcoded line TOO produced the double-greeting Refael heard. EVI off →
+    # the hardcoded line remains the greeting.
+    if _evi_on():
+        logger.info("[nova-v207] step 8: greeting delegated to EVI (gated, single)")
+    else:
+        try:
+            await _nova_say(session, first_line)
+            logger.info(f"[nova-v207] step 8: GREETING SENT (hardcoded): '{first_line}'")
+        except Exception as e:
+            logger.error(f"[nova-v207] hardcoded greeting failed: {e}")
 
     # MOVE-PLAY GAME (default ON). The game drives its own vision (per move) and
     # its own nudges/cap, so the legacy one-shot vision loop + idle loop are NOT

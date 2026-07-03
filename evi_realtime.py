@@ -336,19 +336,24 @@ class HumeEVIRealtimeSession(
         self,
         *,
         instructions: NotGivenOr[str] = NOT_GIVEN,
+        user_input: NotGivenOr[str] = NOT_GIVEN,
         tool_choice: NotGivenOr[ToolChoice] = NOT_GIVEN,
         tools: NotGivenOr[list[Tool]] = NOT_GIVEN,
     ) -> asyncio.Future[GenerationCreatedEvent]:
         """Ask EVI to speak. EVI normally drives turns itself from the audio
-        stream; this path is for an explicit, programmatic prompt (e.g.
-        session.generate_reply(instructions="Say hi to Maya"))."""
+        stream; this path is for an explicit, programmatic prompt.
+        instructions= → she speaks the text VERBATIM (assistant_input).
+        user_input=   → her brain RESPONDS to the text (typed chat path —
+                        was silently unsupported before 2026-07-03; typing got no reply)."""
         fut: asyncio.Future[GenerationCreatedEvent] = asyncio.Future()
 
         text = instructions if is_given(instructions) else ""
-        # `assistant_input` makes EVI speak the given text directly.
-        # If you instead want EVI to *respond* to a user line, use "user_input".
         if text:
+            # `assistant_input` makes EVI speak the given text directly.
             self._send({"type": "assistant_input", "text": text})
+        elif is_given(user_input) and user_input:
+            # typed chat: EVI treats it exactly like a spoken kid line.
+            self._send({"type": "user_input", "text": user_input})
         else:
             # nudge: ask EVI to continue. With no text we simply mark user_initiated.
             pass
@@ -482,11 +487,33 @@ class HumeEVIRealtimeSession(
             logger.info("connected to Hume EVI")
             # session_settings must be sent first (sets the input audio format).
             await ws.send_str(json.dumps(self._session_settings_msg()))
-            # Greet first (the worker's scripted session.say() greeting can't run on a
-            # realtime model). Only on the very first connect, not on reconnects.
+            # THE MAGIC MOMENT (2026-07-03): the greeting no longer fires at connect —
+            # it waits for the browser's ready gate (agent.py sets model.greet_gate =
+            # state.client_ready). She is 100% loaded, the stage is set, THEN her first
+            # words land. One greeting, once, ever (fixes the double-greet). 30s failsafe.
             if not getattr(self, "_greeted", False):
                 self._greeted = True
-                await ws.send_str(json.dumps({"type": "user_input", "text": "Hi Nova!"}))
+
+                async def _gated_greet(w=ws):
+                    gate = getattr(self._realtime_model, "greet_gate", None)
+                    try:
+                        if gate is not None:
+                            await asyncio.wait_for(gate.wait(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        logger.info("EVI greet: 30s gate failsafe → greeting anyway")
+                    except Exception:
+                        pass
+                    # the BREATH: everything is ready… a beat of quiet… then her.
+                    # (4-10s later is fine — special beats instant. The overlay melts
+                    # the moment her voice starts, so face + first word land together.)
+                    await asyncio.sleep(1.2)
+                    try:
+                        await w.send_str(json.dumps({"type": "user_input", "text": "Hi Nova!"}))
+                        logger.info("EVI greet nudge sent (gate passed — the moment)")
+                    except Exception as e:
+                        logger.warning(f"EVI greet nudge failed: {e}")
+
+                asyncio.create_task(_gated_greet())
 
             send_task = asyncio.create_task(self._send_task(ws), name="evi_send")
             recv_task = asyncio.create_task(self._recv_task(ws), name="evi_recv")
