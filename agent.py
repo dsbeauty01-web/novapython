@@ -1548,8 +1548,14 @@ async def entrypoint(ctx: JobContext):
             # PHASE 1 (2026-07-03): the recognition brain-prompt is built PER SESSION
             # (kid name / returning / callbacks / tier) and sent as the EVI session
             # system_prompt — personality.py is her live brain again, per kid.
-            evi_prompt = personality.build_evi_system_prompt(state.ctx)
-            logger.info(f"[nova-evi] session system_prompt built ({len(evi_prompt)} chars, returning={bool(state.ctx.name and state.ctx.sessions_before>=1)})")
+            # builder failure must NOT kill the session — Hume config v1 (coach prompt)
+            # is the wired fallback. Hume-only still holds: voice is Kora either way.
+            evi_prompt = None
+            try:
+                evi_prompt = personality.build_evi_system_prompt(state.ctx)
+                logger.info(f"[nova-evi] session system_prompt built ({len(evi_prompt)} chars, returning={bool(state.ctx.name and state.ctx.sessions_before>=1)})")
+            except Exception as pe:
+                logger.exception(f"[nova-evi] prompt build FAILED → using Hume config prompt: {pe}")
             session_kwargs = {
                 "llm": HumeEVIRealtimeModel(system_prompt=evi_prompt),   # keys/config from env
                 "allow_interruptions": True,
