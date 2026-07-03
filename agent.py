@@ -1732,6 +1732,15 @@ async def entrypoint(ctx: JobContext):
     # PHASE 1: RESEND every 2s until the browser acks with client-ready — a single
     # packet can land before the browser's handler is up (seen in loop-round-1).
     async def _announce_ready():
+        # belt AND suspenders: participant ATTRIBUTES (robust, state-synced by LiveKit —
+        # survives data-channel death, late joiners read it instantly) + data packets.
+        try:
+            _res = ctx.room.local_participant.set_attributes({"nova_ready": "1"})
+            if asyncio.iscoroutine(_res):
+                await _res
+            logger.info("[nova-v207] nova_ready attribute set")
+        except Exception as e:
+            logger.warning(f"[nova-ready] set_attributes failed: {e}")
         for _ in range(15):                       # up to 30s of announcing
             if state.client_ready.is_set() or not state.active:
                 return
