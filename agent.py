@@ -1974,8 +1974,13 @@ async def entrypoint(ctx: JobContext):
     # because the face vendor is down.
     try:
         runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
-        await runway_avatar.start(session, room=ctx.room)
+        # BOUNDED (2026-07-03): a hanging Runway start (e.g. mid-credit-outage) used to
+        # block HERE for ~60s — which sits BEFORE session.start, so her VOICE booted 55s
+        # late too (the black-screen + late-greeting session). 15s and we move on.
+        await asyncio.wait_for(runway_avatar.start(session, room=ctx.room), timeout=15.0)
         logger.info(f"[nova-v207] step 2: runway avatar started, id={avatar_id[:8]}")
+    except asyncio.TimeoutError:
+        logger.error("[nova-v207] runway start TIMED OUT (15s) → VOICE-ONLY fallback; voice pipeline proceeds NOW")
     except Exception as e:
         logger.exception(f"[nova-v207] runway start FAILED → VOICE-ONLY fallback (no avatar): {e}")
 
