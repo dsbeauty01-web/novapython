@@ -169,6 +169,7 @@ class HumeEVIRealtimeModel(RealtimeModel):
         self._variables = variables
         self._voice_id = voice_id
         self._greet_fired = False   # INTRO-FINAL: set by fire_greeting(); guards the watchdog + dedupe
+        self.connected_evt: asyncio.Event = asyncio.Event()   # set the moment the EVI ws is truly open
 
         self._input_sample_rate = input_sample_rate
         self._output_sample_rate = output_sample_rate
@@ -503,6 +504,7 @@ class HumeEVIRealtimeSession(
                 continue
 
             logger.info("connected to Hume EVI")
+            self._realtime_model.connected_evt.set()   # gate item 'evi' = THIS, truly live
             # session_settings must be sent first (sets the input audio format).
             await ws.send_str(json.dumps(self._session_settings_msg()))
             # INTRO-FINAL (2026-07-03): NO greeting here. ONE AUTHORITY — the browser's
@@ -543,6 +545,7 @@ class HumeEVIRealtimeSession(
                 break
 
             # unexpected disconnect -> reconnect and notify the agent framework
+            self._realtime_model.connected_evt.clear()   # not live until the next connect
             logger.warning("EVI websocket disconnected; reconnecting")
             self.emit("session_reconnected", RealtimeSessionReconnectedEvent())
             await asyncio.sleep(0.5)

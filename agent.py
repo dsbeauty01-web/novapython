@@ -728,11 +728,31 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     if getattr(state, "_reveal_greeted", False):
                         return
                     state._reveal_greeted = True
-                    logger.info("[REVEAL] reveal-now received → greeting fired (single authority)")
                     llm_obj = getattr(state, "_evi_model", None) or getattr(session, "llm", None)
                     if hasattr(llm_obj, "fire_greeting"):
+                        _live = bool(getattr(llm_obj, "connected_evt", None) and llm_obj.connected_evt.is_set())
+                        logger.info(f"[REVEAL] greeting fired → EVI (ws_live={_live})")
+                        if not _live:
+                            logger.error("[REVEAL] EVI ws NOT LIVE at greeting time — nudge is queued; she may be mute until connect")
                         llm_obj.fire_greeting()
+                        # MUTE GUARD: if she hasn't spoken 7s after firing, retry ONCE, loudly.
+                        async def _mute_guard():
+                            t0 = time.time()
+                            await asyncio.sleep(7.0)
+                            if getattr(state, "_last_nova_at", 0) >= t0:
+                                return   # she spoke — all good
+                            logger.error("[REVEAL] NO SPEECH 7s after greeting — retrying fire once")
+                            try:
+                                llm_obj._greet_fired = False
+                                llm_obj.fire_greeting()
+                            except Exception as ge:
+                                logger.error(f"[REVEAL] greeting retry failed: {ge}")
+                            await asyncio.sleep(8.0)
+                            if getattr(state, "_last_nova_at", 0) < t0:
+                                logger.error("[REVEAL] STILL MUTE after retry — EVI session dead (check W0112/connect errors above)")
+                        asyncio.create_task(_mute_guard())
                     else:
+                        logger.info("[REVEAL] greeting fired → non-EVI say()")
                         # non-EVI path: speak the deterministic opener
                         line = getattr(state, "_first_line", None) or "hey there… I'm Nova. …I can see you, you know."
                         await _nova_say(session, line)
@@ -2028,6 +2048,16 @@ async def entrypoint(ctx: JobContext):
     # PHASE 1: RESEND every 2s until the browser acks with client-ready — a single
     # packet can land before the browser's handler is up (seen in loop-round-1).
     async def _announce_ready():
+        # FAKE-READY KILL (2026-07-03): nova-ready used to mean "session.start returned" —
+        # but the EVI websocket connects ASYNC after that, so the browser revealed a Nova
+        # who couldn't speak yet (the mute sessions). Wait for the ws to be TRULY open.
+        model = getattr(state, "_evi_model", None)
+        if model is not None and hasattr(model, "connected_evt"):
+            try:
+                await asyncio.wait_for(model.connected_evt.wait(), timeout=25.0)
+                logger.info("[nova-evi] ws CONNECTED — announcing TRULY-live nova-ready")
+            except asyncio.TimeoutError:
+                logger.error("[nova-evi] ws NOT connected after 25s — announcing anyway; expect mute (watch fire_greeting)")
         # belt AND suspenders: participant ATTRIBUTES (robust, state-synced by LiveKit —
         # survives data-channel death, late joiners read it instantly) + data packets.
         try:
