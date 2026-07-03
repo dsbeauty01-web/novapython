@@ -426,6 +426,32 @@ class NovaSessionState:
             if tier in ("LITTLE", "KID", "TEEN", "ADULT"):
                 self.ctx.age_tier = tier
                 logger.info(f"[state] age_tier = {tier}")
+                # PHASE 1: age asked ONCE, kept FOREVER — returning kids skip the age beat
+                try:
+                    _mem = memory.store.get(self.kid_id)
+                    _mem.add_shared_fact("age_tier", tier)
+                    memory.store.save(_mem)
+                    self.ctx.shared_facts["age_tier"] = tier
+                except Exception as e:
+                    logger.warning(f"[memory] age_tier save failed: {e}")
+
+        elif ev == "away":
+            # PHASE 1: kid left frame+voice for ~12s → ONE warm nudge, then quiet.
+            if not getattr(self, "_away_nudged", False):
+                self._away_nudged = True
+                sess = getattr(self, "session", None)
+                if sess:
+                    asyncio.create_task(_nova_say(sess, "I'm right here when you're ready!"))
+                logger.info("[away] one nudge sent → quiet waiting")
+
+        elif ev == "back":
+            # kid returned → warm re-greet; the flow resumes from conversation context.
+            # NOTE: under EVI, instructions= is spoken VERBATIM — final line only.
+            self._away_nudged = False
+            sess = getattr(self, "session", None)
+            if sess:
+                asyncio.create_task(_nova_say(sess, "there you are!"))
+            logger.info("[away] kid returned → resuming the beat")
 
         elif ev == "energy":
             # energy mirror — frontend reports the kid's movement energy; Nova matches it
@@ -1519,8 +1545,13 @@ async def entrypoint(ctx: JobContext):
     if _evi_on():
         try:
             from evi_realtime import HumeEVIRealtimeModel
+            # PHASE 1 (2026-07-03): the recognition brain-prompt is built PER SESSION
+            # (kid name / returning / callbacks / tier) and sent as the EVI session
+            # system_prompt — personality.py is her live brain again, per kid.
+            evi_prompt = personality.build_evi_system_prompt(state.ctx)
+            logger.info(f"[nova-evi] session system_prompt built ({len(evi_prompt)} chars, returning={bool(state.ctx.name and state.ctx.sessions_before>=1)})")
             session_kwargs = {
-                "llm": HumeEVIRealtimeModel(),   # reads HUME_API_KEY / HUME_SECRET_KEY / HUME_CONFIG_ID
+                "llm": HumeEVIRealtimeModel(system_prompt=evi_prompt),   # keys/config from env
                 "allow_interruptions": True,
             }
             logger.info("[nova-evi] USE_EVI=1 → STT+LLM+TTS replaced with Hume EVI realtime (Kora)")
@@ -1707,8 +1738,15 @@ async def entrypoint(ctx: JobContext):
     # Rebuild sprint: HARDCODED first greeting — no LLM wait at session start
     # (saves ~2-3s, consistent first impression). The LLM drives every reply
     # AFTER this opening line.
+    # PHASE 1: if the pre-reveal vision snapshot returned a detail, she OPENS with
+    # proof she sees ("ohh — I love that purple shirt!"). SKIP/None → clean greet.
+    _vis = (state.ctx.observed_visual or "").strip()
+    _vis_ok = _vis and len(_vis) < 60 and "skip" not in _vis.lower() and "could not" not in _vis.lower()
     if state.ctx.name and state.ctx.sessions_before > 0:
         first_line = f"ohh — {state.ctx.name}! you came BACK! ...ready to play again?"
+    elif _vis_ok:
+        _v = _vis if _vis.lower().startswith(("the ", "that ", "your ")) else f"that {_vis}"
+        first_line = f"ohh — I love {_v}! hi! I'm Nova — your magic movement friend! ...what's your name?"
     else:
         first_line = "hi! I'm Nova — your magic movement friend! ...what's your name?"
 
