@@ -714,6 +714,30 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 except Exception as e:
                     logger.error(f"[client-log] handler error: {e}")
 
+            elif kind == "reveal-now":
+                # INTRO-FINAL: THE one greeting trigger. Browser starts the calm fade →
+                # sends reveal-now → we speak. No other path may fire the greeting.
+                # Dedupe here + in the model; ack so the browser stops resending.
+                async def _reveal_greet():
+                    state.client_ready.set()   # stop the nova-ready announcer too
+                    try:
+                        await room.local_participant.publish_data(
+                            json.dumps({"kind": "reveal-ack"}).encode("utf-8"), reliable=True)
+                    except Exception:
+                        pass
+                    if getattr(state, "_reveal_greeted", False):
+                        return
+                    state._reveal_greeted = True
+                    logger.info("[REVEAL] reveal-now received → greeting fired (single authority)")
+                    llm_obj = getattr(state, "_evi_model", None) or getattr(session, "llm", None)
+                    if hasattr(llm_obj, "fire_greeting"):
+                        llm_obj.fire_greeting()
+                    else:
+                        # non-EVI path: speak the deterministic opener
+                        line = getattr(state, "_first_line", None) or "hey there… I'm Nova. …I can see you, you know."
+                        await _nova_say(session, line)
+                asyncio.create_task(_reveal_greet())
+
             elif kind == "client-ready":
                 # Browser finished its reveal beat — NOW Nova may greet (cinematic
                 # reveal-then-greet). Greeting otherwise fires on an 8s fallback.
@@ -1779,7 +1803,7 @@ async def entrypoint(ctx: JobContext):
             except Exception as pe:
                 logger.exception(f"[nova-evi] prompt build FAILED → using Hume config prompt: {pe}")
             _evi_model = HumeEVIRealtimeModel(system_prompt=evi_prompt)   # keys/config from env
-            _evi_model.greet_gate = state.client_ready   # THE MOMENT: greeting waits for the browser's ready gate
+            state._evi_model = _evi_model   # reveal-now handler fires the greeting through this
             session_kwargs = {
                 "llm": _evi_model,
                 "allow_interruptions": True,
@@ -1996,27 +2020,12 @@ async def entrypoint(ctx: JobContext):
     else:
         first_line = "hi! I'm Nova — your magic movement friend! ...what's your name?"
 
-    # Cinematic reveal: wait until the browser signals it has revealed Nova
-    # (client-ready) before greeting — so she greets AFTER she appears, not behind
-    # the overlay. 8s fallback so she never stays silent if the signal is missed.
-    try:
-        await asyncio.wait_for(state.client_ready.wait(), timeout=12.0)
-        logger.info("[nova-v207] greeting released by client-ready")
-    except asyncio.TimeoutError:
-        logger.info("[nova-v207] greeting released by 12s fallback (no client-ready)")
-
-    # THE MOMENT (2026-07-03): under EVI, HER brain greets — once, gated on
-    # client_ready inside the bridge (evi_realtime._gated_greet). Speaking the
-    # hardcoded line TOO produced the double-greeting Refael heard. EVI off →
-    # the hardcoded line remains the greeting.
-    if _evi_on():
-        logger.info("[nova-v207] step 8: greeting delegated to EVI (gated, single)")
-    else:
-        try:
-            await _nova_say(session, first_line)
-            logger.info(f"[nova-v207] step 8: GREETING SENT (hardcoded): '{first_line}'")
-        except Exception as e:
-            logger.error(f"[nova-v207] hardcoded greeting failed: {e}")
+    # INTRO-FINAL (2026-07-03): NO greeting trigger here. ONE AUTHORITY — the browser's
+    # reveal-now packet (handled in register_data_handler) fires the greeting: EVI →
+    # model.fire_greeting(); non-EVI → _nova_say(state._first_line). The old client-ready
+    # wait + 12s fallback were the second clock that let her speak 8s before her face.
+    state._first_line = first_line
+    logger.info("[nova-v207] step 8: greeting armed — waits for reveal-now (single authority)")
 
     # MOVE-PLAY GAME (default ON). The game drives its own vision (per move) and
     # its own nudges/cap, so the legacy one-shot vision loop + idle loop are NOT

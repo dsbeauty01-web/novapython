@@ -168,6 +168,7 @@ class HumeEVIRealtimeModel(RealtimeModel):
         self._system_prompt = system_prompt
         self._variables = variables
         self._voice_id = voice_id
+        self._greet_fired = False   # INTRO-FINAL: set by fire_greeting(); guards the watchdog + dedupe
 
         self._input_sample_rate = input_sample_rate
         self._output_sample_rate = output_sample_rate
@@ -193,6 +194,23 @@ class HumeEVIRealtimeModel(RealtimeModel):
                 self._http_session = aiohttp.ClientSession()
                 self._http_session_owned = True
         return self._http_session
+
+    def fire_greeting(self) -> bool:
+        """INTRO-FINAL: THE one and only greeting trigger — called by the worker's
+        reveal-now handler. Nudges EVI to greet (her brain speaks per the calm-opening
+        prompt). Dedupes: returns False if already fired."""
+        if self._greet_fired:
+            return False
+        self._greet_fired = True
+        fired = False
+        for sess in list(self._sessions):
+            try:
+                sess._send({"type": "user_input", "text": "(the dancer just appeared on screen — greet them now)"})
+                fired = True
+            except Exception:
+                logger.exception("fire_greeting: send failed")
+        logger.info(f"[REVEAL] fire_greeting → sent={fired}")
+        return fired
 
     def session(self) -> "HumeEVIRealtimeSession":
         sess = HumeEVIRealtimeSession(self)
@@ -487,33 +505,26 @@ class HumeEVIRealtimeSession(
             logger.info("connected to Hume EVI")
             # session_settings must be sent first (sets the input audio format).
             await ws.send_str(json.dumps(self._session_settings_msg()))
-            # THE MAGIC MOMENT (2026-07-03): the greeting no longer fires at connect —
-            # it waits for the browser's ready gate (agent.py sets model.greet_gate =
-            # state.client_ready). She is 100% loaded, the stage is set, THEN her first
-            # words land. One greeting, once, ever (fixes the double-greet). 30s failsafe.
-            if not getattr(self, "_greeted", False):
-                self._greeted = True
-
-                async def _gated_greet(w=ws):
-                    gate = getattr(self._realtime_model, "greet_gate", None)
-                    try:
-                        if gate is not None:
-                            await asyncio.wait_for(gate.wait(), timeout=30.0)
-                    except asyncio.TimeoutError:
-                        logger.info("EVI greet: 30s gate failsafe → greeting anyway")
-                    except Exception:
-                        pass
-                    # the BREATH: everything is ready… a beat of quiet… then her.
-                    # (4-10s later is fine — special beats instant. The overlay melts
-                    # the moment her voice starts, so face + first word land together.)
-                    await asyncio.sleep(1.2)
-                    try:
-                        await w.send_str(json.dumps({"type": "user_input", "text": "Hi Nova!"}))
-                        logger.info("EVI greet nudge sent (gate passed — the moment)")
-                    except Exception as e:
-                        logger.warning(f"EVI greet nudge failed: {e}")
-
-                asyncio.create_task(_gated_greet())
+            # INTRO-FINAL (2026-07-03): NO greeting here. ONE AUTHORITY — the browser's
+            # reveal-now packet is the only thing that fires the greeting (agent.py calls
+            # model.fire_greeting()). Voice-before-face is now impossible, not "checked".
+            # VOICE WATCHDOG (FIX 4): a mid-session reconnect (EVI ws died while the kid
+            # is live) is logged LOUDLY and she resumes the beat out loud. Max 2 resumes.
+            if getattr(self._realtime_model, "_greet_fired", False):
+                n = getattr(self, "_reconnects", 0) + 1
+                self._reconnects = n
+                logger.error(f"[VOICE-WATCHDOG] EVI reconnected MID-SESSION (#{n}) — voice had died")
+                if n <= 2:
+                    async def _resume(w=ws):
+                        await asyncio.sleep(0.8)
+                        try:
+                            await w.send_str(json.dumps({"type": "assistant_input", "text": "okay — where were we!"}))
+                            logger.info("[VOICE-WATCHDOG] resume line sent")
+                        except Exception as e:
+                            logger.warning(f"[VOICE-WATCHDOG] resume failed: {e}")
+                    asyncio.create_task(_resume())
+                else:
+                    logger.error("[VOICE-WATCHDOG] reconnect cap reached — captions must carry the intro")
 
             send_task = asyncio.create_task(self._send_task(ws), name="evi_send")
             recv_task = asyncio.create_task(self._recv_task(ws), name="evi_recv")
