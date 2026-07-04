@@ -735,20 +735,22 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                         if not _live:
                             logger.error("[REVEAL] EVI ws NOT LIVE at greeting time — nudge is queued; she may be mute until connect")
                         llm_obj.fire_greeting()
-                        # MUTE GUARD: if she hasn't spoken 7s after firing, retry ONCE, loudly.
+                        # MUTE GUARD: if she hasn't spoken 12s after firing, retry ONCE, loudly.
+                        # 12s not 7 (Hume cold first-gen ran 28s live) + a speaking-state check —
+                        # the 7s guard re-fired the nudge in the same second her first word landed,
+                        # and the duplicate became a phantom user turn ("ohh — cool name!" to nobody).
                         async def _mute_guard():
                             t0 = time.time()
-                            await asyncio.sleep(7.0)
-                            if getattr(state, "_last_nova_at", 0) >= t0:
-                                return   # she spoke — all good
-                            logger.error("[REVEAL] NO SPEECH 7s after greeting — retrying fire once")
+                            await asyncio.sleep(12.0)
+                            if getattr(state, "_last_nova_at", 0) >= t0 or getattr(state, "_is_speaking", False):
+                                return   # she spoke / is mid-word — all good
+                            logger.error("[REVEAL] NO SPEECH 12s after greeting — retrying fire once (self-guarding)")
                             try:
-                                llm_obj._greet_fired = False
-                                llm_obj.fire_greeting()
+                                llm_obj.fire_greeting(retry=True)
                             except Exception as ge:
                                 logger.error(f"[REVEAL] greeting retry failed: {ge}")
-                            await asyncio.sleep(8.0)
-                            if getattr(state, "_last_nova_at", 0) < t0:
+                            await asyncio.sleep(10.0)
+                            if getattr(state, "_last_nova_at", 0) < t0 and not getattr(state, "_is_speaking", False):
                                 logger.error("[REVEAL] STILL MUTE after retry — EVI session dead (check W0112/connect errors above)")
                         asyncio.create_task(_mute_guard())
                     else:
@@ -1966,6 +1968,7 @@ async def entrypoint(ctx: JobContext):
             if new_state:
                 logger.info(f"[BRAIN] state {old_state} → {new_state}")
             speaking = (new_state == "speaking")
+            state._is_speaking = speaking   # mute-guard checks this (text lands later than audio)
             state.pace.mark_speaking(speaking)
     except Exception as e:
         logger.warning(f"[hook] agent_state_changed unavailable: {e}")

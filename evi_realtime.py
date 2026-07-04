@@ -201,21 +201,30 @@ class HumeEVIRealtimeModel(RealtimeModel):
                 self._http_session_owned = True
         return self._http_session
 
-    def fire_greeting(self) -> bool:
+    def fire_greeting(self, retry: bool = False) -> bool:
         """INTRO-FINAL: THE one and only greeting trigger — called by the worker's
         reveal-now handler. Nudges EVI to greet (her brain speaks per the calm-opening
-        prompt). Dedupes: returns False if already fired."""
-        if self._greet_fired:
+        prompt). Dedupes: returns False if already fired.
+
+        retry=True sends a SELF-GUARDING nudge: if the first nudge actually landed
+        (cold first-gen raced the mute guard — live 2026-07-04: the duplicate became a
+        phantom user turn and she said "ohh — cool name!" to nobody), the worst a
+        duplicate can produce is a warm re-ask of the name, never a fake reaction."""
+        if self._greet_fired and not retry:
             return False
         self._greet_fired = True
+        text = ("(if you have NOT greeted yet: greet now. if you ALREADY greeted or are speaking "
+                "right now: just warmly ask their name again, one short line, nothing else)"
+                if retry else
+                "(the dancer just appeared on screen — greet them now)")
         fired = False
         for sess in list(self._sessions):
             try:
-                sess._send({"type": "user_input", "text": "(the dancer just appeared on screen — greet them now)"})
+                sess._send({"type": "user_input", "text": text})
                 fired = True
             except Exception:
                 logger.exception("fire_greeting: send failed")
-        logger.info(f"[REVEAL] fire_greeting → sent={fired}")
+        logger.info(f"[REVEAL] fire_greeting → sent={fired}{' (retry)' if retry else ''}")
         return fired
 
     def session(self) -> "HumeEVIRealtimeSession":
