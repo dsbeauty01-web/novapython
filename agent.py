@@ -1790,10 +1790,12 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"[nova-v207] entrypoint room={ctx.room.name}")
 
     kid_id = None
+    voice_only = False
     try:
         if ctx.room.metadata:
             meta = json.loads(ctx.room.metadata)
             kid_id = meta.get("kidId")
+            voice_only = bool(meta.get("voiceOnly"))
     except Exception:
         pass
 
@@ -2119,17 +2121,22 @@ async def entrypoint(ctx: JobContext):
     # continues as voice-only. Her audio publishes directly via RoomIO. The browser
     # reveals with a static face when only audio arrives. She must never fully die
     # because the face vendor is down.
-    try:
-        runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
-        # BOUNDED (2026-07-03): a hanging Runway start (e.g. mid-credit-outage) used to
-        # block HERE for ~60s — which sits BEFORE session.start, so her VOICE booted 55s
-        # late too (the black-screen + late-greeting session). 15s and we move on.
-        await asyncio.wait_for(runway_avatar.start(session, room=ctx.room), timeout=15.0)
-        logger.info(f"[nova-v207] step 2: runway avatar started, id={avatar_id[:8]}")
-    except asyncio.TimeoutError:
-        logger.error("[nova-v207] runway start TIMED OUT (15s) → VOICE-ONLY fallback; voice pipeline proceeds NOW")
-    except Exception as e:
-        logger.exception(f"[nova-v207] runway start FAILED → VOICE-ONLY fallback (no avatar): {e}")
+    if voice_only:
+        # ?voiceonly session (room metadata): Nova is VOICE-ONLY by request — no Runway
+        # avatar, no credits burned. Audio publishes via RoomIO; browser shows static face.
+        logger.info("[nova-v207] step 2: VOICE-ONLY session (requested) → Runway avatar skipped")
+    else:
+        try:
+            runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
+            # BOUNDED (2026-07-03): a hanging Runway start (e.g. mid-credit-outage) used to
+            # block HERE for ~60s — which sits BEFORE session.start, so her VOICE booted 55s
+            # late too (the black-screen + late-greeting session). 15s and we move on.
+            await asyncio.wait_for(runway_avatar.start(session, room=ctx.room), timeout=15.0)
+            logger.info(f"[nova-v207] step 2: runway avatar started, id={avatar_id[:8]}")
+        except asyncio.TimeoutError:
+            logger.error("[nova-v207] runway start TIMED OUT (15s) → VOICE-ONLY fallback; voice pipeline proceeds NOW")
+        except Exception as e:
+            logger.exception(f"[nova-v207] runway start FAILED → VOICE-ONLY fallback (no avatar): {e}")
 
     # The agent
     agent = NovaAgent(state)

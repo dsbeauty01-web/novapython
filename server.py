@@ -113,6 +113,7 @@ class CreateSessionReq(BaseModel):
     kidId: Optional[str] = None
     kidName: Optional[str] = None
     agent: Optional[str] = "nova"   # v222 sends "nova222" to reach the Gemini worker
+    voiceOnly: Optional[bool] = False   # ?voiceonly pages: Nova voice, NO Runway avatar
     # TASK 1 (fable5): the page PREFETCHES the session at load with dispatch=False
     # (room+token only). Nova is summoned later via /v2/dispatch at the orb tap —
     # dispatching her into an empty room at page load left her tracks unpublished.
@@ -130,8 +131,8 @@ async def create_session(req: CreateSessionReq):
     # Stable kid_id (browser sends, or we generate)
     kid_id = req.kidId or f"anon-{secrets.token_hex(6)}"
 
-    # Embed kid_id in room metadata so the agent picks it up
-    room_metadata = json.dumps({"kidId": kid_id})
+    # Embed kid_id (+ voiceOnly flag) in room metadata so the agent picks it up
+    room_metadata = json.dumps({"kidId": kid_id, "voiceOnly": bool(req.voiceOnly)})
 
     token = (
         api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
