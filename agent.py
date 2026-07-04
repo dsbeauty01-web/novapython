@@ -1115,7 +1115,7 @@ async def _silence_driver(state: NovaSessionState, session: AgentSession):
     while state.active and nudges < 5:
         await asyncio.sleep(2.0)
         try:
-            if state.ctx.phase != "recognition":
+            if state.ctx.phase not in ("intro", "recognition"):
                 logger.info(f"[SILENCE-DRIVER] phase moved to {state.ctx.phase} → standing down")
                 return
             now = time.time()
