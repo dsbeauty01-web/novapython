@@ -1179,12 +1179,16 @@ def _scan_nova_line(state: NovaSessionState, txt: str):
     try:
         # NOTE: _run_nova sets phase "intro" — the old "recognition"-only check
         # meant the intro try-a-move light NEVER fired in a live session.
-        if getattr(state.ctx, "phase", "") not in ("intro", "recognition"):
+        # "play" included too: a premature 'yes' signal advances the worker phase
+        # while the kid is still on the intro screen — her body-part cues must
+        # keep lighting up there (browser gates by ITS OWN phase, so this is safe).
+        if getattr(state.ctx, "phase", "") not in ("intro", "recognition", "play"):
             return
         room = getattr(state, "room", None)
         if not room:
             return
         if _NOVA_GO.search(txt or ""):
+            state._dance_invited = True   # a kid "yes" from here on means START THE GAME
             logger.info(f"[GAME-PUSH] Nova called the dance herself: '{txt[:50]}'")
             asyncio.create_task(room.local_participant.publish_data(
                 json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True))
@@ -1936,6 +1940,16 @@ async def entrypoint(ctx: JobContext):
                             pass
                         logger.info(f"[nova] captured name (hook): {nm}")
                 sig = personality.detect_signal(text)
+                # ORDER FIX (2026-07-04 live): "I'm ready to make a move" answered HER
+                # "ready to make a move?" but the 'yes' signal advanced the worker to the
+                # play phase and she jumped to "let's DANCE!" — the challenge was skipped.
+                # A 'yes' during the intro only counts AFTER the movement challenge
+                # happened (a real move reacted) or after she invited the dance herself.
+                if (sig == "yes" and state.ctx.phase in ("intro", "recognition")
+                        and not getattr(state, "_intro_moves_reacted", None)
+                        and not getattr(state, "_dance_invited", False)):
+                    logger.info("[game] 'yes' before the movement challenge → treated as challenge-ready, not game-start")
+                    sig = None
                 if sig:
                     state.last_kid_signal = sig
                     if sig == "done":
