@@ -1173,9 +1173,11 @@ _NOVA_GO = _re.compile(r"\blet'?s\s+(dance|play)\b|\bpick\s+(a|your)\s+game\b|\b
 
 
 def _scan_nova_line(state: NovaSessionState, txt: str):
-    """Fire-and-forget: mirror Nova's words into browser actions (recognition phase only)."""
+    """Fire-and-forget: mirror Nova's words into browser actions (intro/recognition only)."""
     try:
-        if getattr(state.ctx, "phase", "") != "recognition":
+        # NOTE: _run_nova sets phase "intro" — the old "recognition"-only check
+        # meant the intro try-a-move light NEVER fired in a live session.
+        if getattr(state.ctx, "phase", "") not in ("intro", "recognition"):
             return
         room = getattr(state, "room", None)
         if not room:
@@ -1459,6 +1461,11 @@ _NOT_A_NAME = {
     "are", "am", "is", "was", "can", "could", "do", "does", "did", "will",
     "hmm", "oh", "ohh", "wait", "stop", "play", "go", "name", "call", "here",
     "there", "this", "that", "good", "bad", "cool", "nice", "hungry", "tired",
+    # words Nova herself says (mic echo / barge-in) — "Ready" got stored as a
+    # name from "Ready to get those dancing shoes on?" (2026-07-04 session)
+    "ready", "start", "lets", "dance", "dancing", "dancer", "sure", "fine",
+    "please", "thanks", "thank", "sorry", "friend", "again", "come", "wow",
+    "superstar", "champion", "awesome", "great", "fantastic",
 }
 
 def _extract_name(text: Optional[str]) -> Optional[str]:

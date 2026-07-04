@@ -166,6 +166,11 @@ class HumeEVIRealtimeModel(RealtimeModel):
         self._config_version = config_version
 
         self._system_prompt = system_prompt
+        # W0112 ROOT-CAUSE FIX: when a per-session prompt is given it is LOCKED —
+        # update_instructions() must not overwrite it with the framework's phase
+        # prompts (their wording trips Hume's content filter and poisons every
+        # (re)connect for the whole session).
+        self._prompt_locked = system_prompt is not None
         self._variables = variables
         self._voice_id = voice_id
         self._greet_fired = False   # INTRO-FINAL: set by fire_greeting(); guards the watchdog + dedupe
@@ -289,7 +294,13 @@ class HumeEVIRealtimeSession(
     async def update_instructions(self, instructions: str) -> None:
         # EVI's system prompt is fixed for the connection (set via session_settings
         # / config). We store it; it takes effect on (re)connect.
-        self._realtime_model._system_prompt = instructions
+        rt = self._realtime_model
+        if getattr(rt, "_prompt_locked", False):
+            # Per-session EVI prompt (Hume-safe wording) is authoritative — the
+            # framework phase prompts get blocked by Hume's filter (W0112).
+            logger.debug("update_instructions ignored — per-session EVI prompt is locked")
+            return
+        rt._system_prompt = instructions
 
     async def update_chat_ctx(self, chat_ctx: ChatContext) -> None:
         # EVI manages conversation state server-side. We just track it locally.
@@ -592,6 +603,25 @@ class HumeEVIRealtimeSession(
 
         elif mtype == "error":
             logger.error("EVI error: %s", msg)
+            # Hume's prompt filter is an LLM moderator and intermittently blocks
+            # even clean prompts — a block means she silently runs on the console
+            # fallback prompt (wrong script). Retry the send; the same text
+            # usually passes on the next attempt.
+            if msg.get("code") == "W0112" or "content_filter" in (msg.get("slug") or ""):
+                n = getattr(self, "_prompt_retries", 0)
+                if n < 2:
+                    self._prompt_retries = n + 1
+                    logger.error(f"[EVI-PROMPT] system_prompt BLOCKED by Hume filter — resend {n + 1}/2 "
+                                 "(console fallback prompt is live until this lands)")
+
+                    async def _resend() -> None:
+                        await asyncio.sleep(1.5)
+                        self._send(self._session_settings_msg())
+
+                    asyncio.create_task(_resend())
+                else:
+                    logger.error("[EVI-PROMPT] prompt still blocked after 2 resends — "
+                                 "session is stuck on the Hume console prompt")
 
         # tool_call / assistant_prosody etc. are ignored in this draft.
 
