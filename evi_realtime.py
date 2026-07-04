@@ -216,7 +216,8 @@ class HumeEVIRealtimeModel(RealtimeModel):
         text = ("(if you have NOT greeted yet: greet now. if you ALREADY greeted or are speaking "
                 "right now: just warmly ask their name again, one short line, nothing else)"
                 if retry else
-                "(the dancer just appeared on screen — greet them now)")
+                (getattr(self, "_greet_text_override", None)
+                 or "(the dancer just appeared on screen — greet them now)"))
         fired = False
         for sess in list(self._sessions):
             try:

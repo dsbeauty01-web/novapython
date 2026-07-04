@@ -876,6 +876,12 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
     state._challenge_ran = True
     hit = False
     for mv in INTRO_CHALLENGE:
+        # ABORT if the intro is over (kid pressed the button / game started) — the
+        # challenge must never talk over a running game (live 2026-07-04)
+        if state.game_done.is_set() or state.ctx.phase not in ("intro", "recognition"):
+            logger.info("[CHALLENGE] aborted — intro is over (phase moved on)")
+            state._challenge_active = None
+            return
         state._challenge_active = mv["action"]
         state._challenge_done = asyncio.Event()
         # 1) LIGHT first — locked to the exact joint (browser arms detection for this move only)
@@ -894,12 +900,20 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
             await asyncio.wait_for(state._challenge_done.wait(), timeout=4.5)
         except asyncio.TimeoutError:
             pass
+        if state.ctx.phase not in ("intro", "recognition"):
+            logger.info("[CHALLENGE] aborted mid-move — game started")
+            state._challenge_active = None
+            return
         if not state._challenge_done.is_set():
             await _nova_say(session, mv["filler"])
             try:
                 await asyncio.wait_for(state._challenge_done.wait(), timeout=5.5)
             except asyncio.TimeoutError:
                 pass
+        if state.ctx.phase not in ("intro", "recognition"):
+            logger.info("[CHALLENGE] aborted mid-move — game started")
+            state._challenge_active = None
+            return
         # 4) confirmed → pre-made WOW; not → next scripted move
         if state._challenge_done.is_set():
             logger.info(f"[CHALLENGE] {mv['action']} CONFIRMED by detection → WOW")
@@ -1791,15 +1805,24 @@ async def entrypoint(ctx: JobContext):
 
     kid_id = None
     voice_only = False
+    direct_game = None
     try:
         if ctx.room.metadata:
             meta = json.loads(ctx.room.metadata)
             kid_id = meta.get("kidId")
             voice_only = bool(meta.get("voiceOnly"))
+            direct_game = meta.get("directGame") or None
     except Exception:
         pass
 
     state = NovaSessionState(kid_id=kid_id)
+    if direct_game:
+        # DIRECT-GAME (?game= link): the browser jumps straight into the game — NO intro
+        # name-talk, NO scripted challenge (it talked over the game, live 2026-07-04).
+        state._challenge_ran = True
+        state._dance_invited = True
+        state._direct_game = direct_game
+        logger.info(f"[nova-v207] DIRECT-GAME session → intro challenge OFF, game '{direct_game}'")
     logger.info(
         f"[nova-v207] kid_id={state.kid_id} "
         f"name={state.ctx.name} sessions_before={state.ctx.sessions_before}"
@@ -1976,6 +1999,10 @@ async def entrypoint(ctx: JobContext):
                 logger.exception(f"[nova-evi] prompt build FAILED → using Hume config prompt: {pe}")
             _evi_model = HumeEVIRealtimeModel(system_prompt=evi_prompt)   # keys/config from env
             state._evi_model = _evi_model   # reveal-now handler fires the greeting through this
+            if direct_game:
+                # game link: one excited hello, no name question — the game starts in seconds
+                _evi_model._greet_text_override = ("(the dancer just arrived and the dance game is starting "
+                                                   "right now — greet them with ONE short excited line, no questions)")
             session_kwargs = {
                 "llm": _evi_model,
                 "allow_interruptions": True,
