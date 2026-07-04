@@ -624,9 +624,15 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 # detects the move Nova asked for (e.g. a clap), lights the kid's hands,
                 # and sends this. She reacts to the REAL move (dance-phase react above
                 # only fires in "dance", so the intro needs its own hook).
-                if event.get("event") == "try_move" and state.ctx.phase in ("recognition", "intro"):
-                    asyncio.create_task(
-                        _react_to_intro_move(session, state, agent, event.get("action")))
+                if event.get("event") == "try_move" and state.ctx.phase in ("recognition", "intro", "play"):
+                    _act = (event.get("action") or "").lower()
+                    if getattr(state, "_challenge_active", None):
+                        # scripted challenge owns the reaction — just confirm the move
+                        if _act == state._challenge_active and getattr(state, "_challenge_done", None):
+                            state._challenge_done.set()
+                    else:
+                        asyncio.create_task(
+                            _react_to_intro_move(session, state, agent, event.get("action")))
 
                 # Phase transition to goodbye → speak final goodbye
                 if event.get("event") == "phase" and event.get("phase") == "goodbye":
@@ -837,6 +843,77 @@ async def _react_to_intro_move(session: AgentSession, state: NovaSessionState,
         logger.info(f"[intro-move] reacted to '{act}': {line}")
     except Exception as e:
         logger.warning(f"[intro-move] react failed: {e}")
+
+
+# ════════════════════════════════════════════════════════════════════
+# SCRIPTED MOVEMENT CHALLENGE (2026-07-04, Refael's design)
+# ────────────────────────────────────────────────────────────────────
+# The LLM does NOT choose or time the challenge — sync was impossible
+# (light late/wrong joint, 4s blind spot, premature reactions). The
+# WORKER runs a fixed script: max 2 pre-made moves, light locked to the
+# EXACT joint the moment the cue line is spoken, neutral filler while
+# waiting, pre-made WOW only when the browser's detection confirms.
+# ════════════════════════════════════════════════════════════════════
+INTRO_CHALLENGE = [
+    {"action": "shoulder", "joint": "right_shoulder",
+     "cue":    "okay… see that sparkle? can you nudge that RIGHT shoulder?",
+     "filler": "let's see it… give that shoulder a little push!",
+     "wow":    "WOW — that RIGHT shoulder! that was a GOOD one!"},
+    {"action": "left", "joint": "left_wrist",
+     "cue":    "let's try another one — raise your LEFT hand, way UP high!",
+     "filler": "go on… that LEFT hand, up to the sky!",
+     "wow":    "WOW — that LEFT hand shot UP! amazing!"},
+]
+_CHALLENGE_CLOSE_WIN  = "ready to dance? push the big button — or say 'let's start'!"
+_CHALLENGE_CLOSE_MISS = "I LOVE that energy! ready to dance? push the big button!"
+
+
+async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
+                               room: rtc.Room):
+    """The fixed, fully-synced challenge. One run per session."""
+    if getattr(state, "_challenge_ran", False):
+        return
+    state._challenge_ran = True
+    hit = False
+    for mv in INTRO_CHALLENGE:
+        state._challenge_active = mv["action"]
+        state._challenge_done = asyncio.Event()
+        # 1) LIGHT first — locked to the exact joint (browser arms detection for this move only)
+        try:
+            await room.local_participant.publish_data(
+                json.dumps({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]}).encode("utf-8"),
+                reliable=True)
+        except Exception as e:
+            logger.warning(f"[CHALLENGE] cue publish failed: {e}")
+        state._last_cue_part = (mv["action"], time.time())   # keep _scan_nova_line dedupe in sync
+        logger.info(f"[CHALLENGE] cue → {mv['action']} (light locked on {mv['joint']})")
+        # 2) VOICE — the pre-made cue line, spoken the same beat
+        await _nova_say(session, mv["cue"])
+        # 3) wait; neutral filler at ~4.5s (she does NOT know yet — never claims success)
+        try:
+            await asyncio.wait_for(state._challenge_done.wait(), timeout=4.5)
+        except asyncio.TimeoutError:
+            pass
+        if not state._challenge_done.is_set():
+            await _nova_say(session, mv["filler"])
+            try:
+                await asyncio.wait_for(state._challenge_done.wait(), timeout=5.5)
+            except asyncio.TimeoutError:
+                pass
+        # 4) confirmed → pre-made WOW; not → next scripted move
+        if state._challenge_done.is_set():
+            logger.info(f"[CHALLENGE] {mv['action']} CONFIRMED by detection → WOW")
+            await _nova_say(session, mv["wow"])
+            hit = True
+            break
+        logger.info(f"[CHALLENGE] {mv['action']} not detected in window → next move")
+    state._challenge_active = None
+    seen = getattr(state, "_intro_moves_reacted", None) or set()
+    seen.add("scripted")
+    state._intro_moves_reacted = seen        # unlocks the kid's 'yes' → game
+    state._dance_invited = True
+    await _nova_say(session, _CHALLENGE_CLOSE_WIN if hit else _CHALLENGE_CLOSE_MISS)
+    logger.info(f"[CHALLENGE] done (hit={hit}) → dance invite out")
 
 
 _OAI_CLIENT = None
@@ -1184,6 +1261,10 @@ def _scan_nova_line(state: NovaSessionState, txt: str):
         # keep lighting up there (browser gates by ITS OWN phase, so this is safe).
         if getattr(state.ctx, "phase", "") not in ("intro", "recognition", "play"):
             return
+        # during the SCRIPTED challenge the worker owns cue/light/flow — her spoken
+        # lines (which name the parts) must not re-cue or open the picker
+        if getattr(state, "_challenge_active", None):
+            return
         room = getattr(state, "room", None)
         if not room:
             return
@@ -1195,6 +1276,12 @@ def _scan_nova_line(state: NovaSessionState, txt: str):
             return
         for pat, part in _NOVA_PART:
             if pat.search(txt or ""):
+                # her own REACTION line names the part too ("that SHOULDER popped") —
+                # don't re-cue the same part in a burst, it re-arms the browser detector
+                last = getattr(state, "_last_cue_part", None)
+                if last and last[0] == part and time.time() - last[1] < 12.0:
+                    return
+                state._last_cue_part = (part, time.time())
                 logger.info(f"[CUE-PART] Nova named '{part}' → lighting it on the kid")
                 asyncio.create_task(room.local_participant.publish_data(
                     json.dumps({"kind": "cue-part", "part": part}).encode("utf-8"), reliable=True))
@@ -1620,6 +1707,16 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
             except Exception:
                 pass
 
+    # ── SCRIPTED CHALLENGE FALLBACK: normally the kid's first 'yes' starts it
+    # (transcription hook). If they never say yes (shy/silent), start it anyway
+    # 18s after the name beat — the challenge is the heart of the intro. ──
+    async def _challenge_fallback():
+        await asyncio.sleep(18.0)
+        if not getattr(state, "_challenge_ran", False) and not state.game_done.is_set():
+            logger.info("[CHALLENGE] fallback start (no 'yes' heard after the name beat)")
+            await _run_intro_challenge(session, state, room)
+    asyncio.create_task(_challenge_fallback())
+
     # ── wait for a 'yes' (the brain's intro reply does the inviting) ──
     accepted = await _wait_for_signal(state, "yes", timeout=30.0)
     if state.game_done.is_set():
@@ -1948,8 +2045,12 @@ async def entrypoint(ctx: JobContext):
                 if (sig == "yes" and state.ctx.phase in ("intro", "recognition")
                         and not getattr(state, "_intro_moves_reacted", None)
                         and not getattr(state, "_dance_invited", False)):
-                    logger.info("[game] 'yes' before the movement challenge → treated as challenge-ready, not game-start")
+                    logger.info("[game] 'yes' before the movement challenge → starting the SCRIPTED challenge")
                     sig = None
+                    if not getattr(state, "_challenge_ran", False):
+                        _rm = getattr(state, "room", None)
+                        if _rm is not None:
+                            asyncio.create_task(_run_intro_challenge(session, state, _rm))
                 if sig:
                     state.last_kid_signal = sig
                     if sig == "done":
