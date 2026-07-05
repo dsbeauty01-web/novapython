@@ -395,6 +395,14 @@ class NovaSessionState:
         elif ev == "hit":
             self.ctx.hits = event.get("hits", self.ctx.hits + 1)
             self.ctx.streak = event.get("streak", self.ctx.streak + 1)
+            # ENDING: remember WHICH moves really landed — the goodbye callback must
+            # reference a real moment, never an invented one.
+            _a = (event.get("action") or "").strip().lower()
+            if _a:
+                acts = getattr(self, "_hit_actions", None)
+                if acts is None:
+                    acts = set(); self._hit_actions = acts
+                acts.add(_a)
             # P3: clean isolation (only the cued part moved) → special praise bank
             self.ctx.last_event = "clean_hit" if event.get("clean") else "hit"
             # Track today's best streak too, so goodbye celebrates THIS session
@@ -413,6 +421,10 @@ class NovaSessionState:
 
         elif ev == "freeze_hit":
             self.ctx.last_event = "freeze_hit"
+            acts = getattr(self, "_hit_actions", None)
+            if acts is None:
+                acts = set(); self._hit_actions = acts
+            acts.add("freeze")
 
         elif ev == "freeze_miss":
             self.ctx.last_event = "freeze_miss"
@@ -464,6 +476,7 @@ class NovaSessionState:
                     logger.warning(f"[memory] age_tier save failed: {e}")
 
         elif ev == "away":
+            self._kid_away = True    # ENDING edge 2: goodbye to an empty room = one soft line
             # PHASE 3 edge 1: mid-song the gate owns it (ONE warm call, song never
             # pauses) — the reaction path handles it; skip the intro-style nudge.
             if self.ctx.phase == "dance" and getattr(self, "game_gate", None):
@@ -480,6 +493,7 @@ class NovaSessionState:
             # kid returned → warm re-greet; the flow resumes from conversation context.
             # NOTE: under EVI, instructions= is spoken VERBATIM — final line only.
             self._away_nudged = False
+            self._kid_away = False
             # PHASE 3 edge 1: mid-song return = SEAMLESS resume, zero comment.
             if self.ctx.phase == "dance" and getattr(self, "game_gate", None):
                 logger.info("[P3-ROUTER] kid back in frame → seamless resume (silent)")
@@ -619,8 +633,21 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 if event.get("event") == "song_start":
                     _song = (event.get("song") or "").strip()
                     state._talk_t0 = time.time() - float(event.get("sec", 0) or 0)
+                    # fresh round: ending trackers reset (play-again replays in-session)
+                    state._goodbye_ran = False
+                    state._goodbye_skip = False
+                    state._hit_actions = set()
+                    state._talk_score_song = None   # allow re-arm for the same song
+                    state.ctx.hits = 0
+                    state.ctx.streak = 0
                     logger.info(f"[TALK-SCORE] song_start '{_song}' (sec={event.get('sec', 0)})")
                     asyncio.create_task(_run_talk_score(session, state, _song))
+
+                # ENDING: play-again = pure delight, goodbye skipped, deposit already saved
+                if event.get("event") == "play_again":
+                    state._goodbye_skip = True
+                    logger.info("[ENDING] play-again → goodbye skipped (deposit stays)")
+                    asyncio.create_task(_nova_say(session, "AGAIN?! okay okay—"))
 
                 # If a hit/miss happened during DANCE, react immediately.
                 # PHASE 3: the router also handles song moments + edge events.
@@ -1227,31 +1254,66 @@ async def _speak_dance_intro(session: AgentSession, state: NovaSessionState, age
 
 
 async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
-    """Phase transitioned to goodbye — warm wrap-up.
-    PHASE 3 continuity gold: if the kid told her something mid-song (she only
-    went 'mm!'), she brings it up NOW — 'wait — you said you have a cat?!'"""
+    """THE ENDING (2026-07-05, NOVA-ENDING.md): RETURN → ONE REAL CALLBACK →
+    PLANT TOMORROW (the comeback deposit) → GOODBYE. Length scales with the game
+    (wave ≤3 lines, full songs ≤4). Edge cases: quit mid-song = 2 warm lines, no
+    ceremony; kid already gone = one soft line; zero hits = tech takes the blame.
+    Finishes with a goodbye-done packet so the browser shows stars/feedback ONLY
+    after her last word."""
+    if getattr(state, "_goodbye_ran", False):
+        return
+    state._goodbye_ran = True
     await state.pace.acquire()
     memory.store.increment_sessions(state.kid_id)
-    nm = (state.ctx.name + "! ") if state.ctx.name else ""
+
+    song = getattr(state, "_talk_score_song", None) or "hello"
+    dur = personality.SONG_DUR.get(song, 90.0)
+    sec = float(getattr(state.ctx, "music_sec", 0) or 0)
+    completed = sec >= 0.8 * dur
+    hit_actions = getattr(state, "_hit_actions", set())
+    zero_hits = (state.ctx.hits or 0) == 0
     topic = getattr(state.ctx, "deferred_topic", None)
-    if topic:
-        try:
-            line = await asyncio.wait_for(_llm_line(
-                "You are Nova, a warm live friend. A kid just finished a dance song. "
-                "Max 2 short sentences, smiling voice, never 'great job/amazing/awesome'.",
-                f'Mid-song they told you: "{topic}". FIRST react to that with real delight '
-                f'("wait — you said…?!"), THEN one warm goodbye that invites them back.',
-                max_tokens=60), timeout=2.5)
-        except Exception:
-            line = ""
-        line = personality.sanitize_game_line(line, max_words=30)
-        if line:
-            logger.info(f"[P3-ROUTER] ending resurfaces deferred topic: '{topic[:60]}'")
-            await _nova_say(session, line)
-            return
-    line = (f"{nm}you did SO good — same time tomorrow?" if state.ctx.max_streak >= 3
-            else f"{nm}that was fun — come back and dance with me?")
-    await _nova_say(session, line)
+    last_key = (state.ctx.shared_facts or {}).get("deposit_key")
+
+    # PLANT TOMORROW — the deposit is saved FIRST (play-again keeps it too),
+    # and the NEXT session's intro opens with deposit_intro.
+    dep_line, dep_key, dep_intro = personality.pick_deposit(song, topic, completed, last_key)
+    try:
+        memory.store.add_shared_fact(state.kid_id, "deposit_key", dep_key)
+        memory.store.add_shared_fact(state.kid_id, "deposit_intro", dep_intro)
+    except Exception as e:
+        logger.warning(f"[ENDING] deposit save failed: {e}")
+
+    if getattr(state, "_goodbye_skip", False):          # play-again: pure delight, no ceremony
+        lines = ["AGAIN?! okay okay—"]
+    elif getattr(state, "_kid_away", False):            # edge 2: never a speech to nobody
+        lines = ["bye friend — I'll be here!"]
+    elif not completed:                                 # edge 1: quit mid-song, no ceremony
+        lines = ["hey — that was FUN. come finish it with me tomorrow?"]
+    else:
+        quick = bool((personality.GOODBYE_SCORES.get(song) or {}).get("quick"))
+        cb = (personality.GOODBYE_TECHBLAME if zero_hits else
+              (personality.pick_goodbye_callback(song, hit_actions, state.ctx.hits or 0)
+               or personality.GOODBYE_BRAVERY))
+        if quick:   # wave: a 28s game can't earn a ceremony — 3 lines, fast-bright
+            lines = [cb, dep_line, "see you tomorrow — I'll be here!"]
+        else:       # full songs: the 4 beats
+            lines = ["okay okay — come here!", cb, dep_line, "same time tomorrow? …I'll be here!"]
+
+    t0 = time.time()
+    for ln in lines:
+        await _nova_say(session, ln)
+        await asyncio.sleep(0.35)
+    logger.info(f"[ENDING] {song} completed={completed} zero_hits={zero_hits} "
+                f"lines={len(lines)} deposit='{dep_key}' spoke_in={time.time()-t0:.1f}s")
+    # stars/feedback appear only AFTER her last word
+    try:
+        room = getattr(state, "room", None)
+        if room:
+            await room.local_participant.publish_data(
+                json.dumps({"kind": "goodbye-done"}).encode("utf-8"), reliable=True)
+    except Exception:
+        pass
 
 
 async def _drop_in_observation(session: AgentSession, state: NovaSessionState, observation: str, agent: "NovaAgent"):

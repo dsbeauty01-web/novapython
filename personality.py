@@ -1014,6 +1014,76 @@ def talk_in_silence(song_id: str, sec: float) -> bool:
 
 
 # ════════════════════════════════════════════════════════════════════
+# THE ENDING (2026-07-05, NOVA-ENDING.md) — session close, per-game aware
+# Skeleton: RETURN → ONE REAL CALLBACK → PLANT TOMORROW → GOODBYE.
+# Wave (28s) earns a QUICK close (≤3 lines); full songs get 4 lines max.
+# Callbacks must match REAL logged events; deposits rotate, never twice.
+# ════════════════════════════════════════════════════════════════════
+SONG_DUR = {"hello": 111.0, "wave": 28.5, "joined": 84.0, "freeze": 57.0}
+
+GOODBYE_SCORES = {
+    # (needed_hit_action, line) — first whose action really happened wins; "any" = any hit
+    "hello":  {"quick": False, "callbacks": [
+        ("freeze",   "that FREEZE — you didn't move a whisker!"),
+        ("clap",     "your clap got SO strong by the end!"),
+        ("head",     "the Nova-says verse — you caught every one!")]},
+    "wave":   {"quick": True, "callbacks": [
+        ("wristwave",    "the light rode your WHOLE arm!"),
+        ("shoulderroll", "wrist to shoulder — smooooth!"),
+        ("elbowpump",    "those elbows found the wave!")]},
+    "joined": {"quick": False, "callbacks": [
+        ("combo",     "the move-it-all part — you were FLYING!"),
+        ("hipbounce", "those hips found the beat!"),
+        ("shrug",     "when it went DOUBLE speed — you stayed ON it!")]},
+    "freeze": {"quick": False, "callbacks": [
+        ("freeze", "FIVE seconds of statue — champion!"),
+        ("any",    "best statue I ever met!")]},
+}
+GOODBYE_BRAVERY   = "you kept GOING — I saw you!"
+GOODBYE_TECHBLAME = "the lights were being silly today! tomorrow we go again!"
+NEXT_GAME_TEASE = {
+    "hello":  ("next time — the WAVE. you'll LOVE it.",        "wave"),
+    "wave":   ("next time — the freeze one. you'll LOVE it.",  "freeze"),
+    "joined": ("next time — Hello Hello. you'll LOVE it.",     "hello"),
+    "freeze": ("next time — the groove one. you'll LOVE it.",  "joined"),
+}
+
+
+def pick_goodbye_callback(song: str, hit_actions, hits: int):
+    """ONE true moment from THIS game. Never invented: the action must have really hit."""
+    sc = GOODBYE_SCORES.get(song) or {}
+    acts = {str(a).lower() for a in (hit_actions or ())}
+    for key, line in sc.get("callbacks", []):
+        if key == "any" and hits > 0:
+            return line
+        if key in acts:
+            return line
+    return GOODBYE_BRAVERY if hits > 0 else None
+
+
+def pick_deposit(song: str, deferred_topic, completed: bool, last_key):
+    """The comeback engine. Returns (tomorrow_line, key, next_intro_opener).
+    Priority: unfinished song > the kid's own words > next-game tease.
+    Never the same deposit key twice in a row."""
+    if not completed and last_key != f"finish:{song}":
+        return ("tomorrow we finish that song — you're SO close!",
+                f"finish:{song}",
+                "you came back to finish our song — YES! I knew it!")
+    if deferred_topic and last_key != "topic":
+        return ("and tomorrow you tell me about that — deal?!",
+                "topic",
+                "wait — you promised to tell me about that thing! I remembered!")
+    line, nxt = NEXT_GAME_TEASE.get(song, NEXT_GAME_TEASE["hello"])
+    key = f"tease:{nxt}"
+    if last_key == key:   # rotate to any other tease
+        for s, (l2, n2) in NEXT_GAME_TEASE.items():
+            if f"tease:{n2}" != key:
+                line, key = l2, f"tease:{n2}"
+                break
+    return (line, key, "it's the day! the one I told you about — let's GO!")
+
+
+# ════════════════════════════════════════════════════════════════════
 # EVI SYSTEM PROMPT (PHASE 1 COMMERCIAL LOCK, 2026-07-03)
 # Under Hume EVI, THIS is her live brain-prompt — sent as session_settings
 # system_prompt at connect (per session, per kid). The Hume-console config
@@ -1028,8 +1098,13 @@ def build_evi_system_prompt(ctx: "NovaContext") -> str:
         callback = f' Use ONE tiny callback if natural (e.g. "{cb}").' if cb else ""
 
     if returning:
+        # THE ENDING's comeback engine: yesterday she planted a promise — the intro MUST
+        # open with it (that promise is WHY they came back).
+        dep = (ctx.shared_facts or {}).get("deposit_intro")
+        dep_beat = (f'\n1b. THE PROMISE (say it right after the hello — it is why they came back): "{dep}"'
+                    if dep else "")
         flow = f"""THE FLOW (returning friend — their name is {ctx.name}, you already know it):
-1. Recognize them — OPENING stays calm, soft wonder, then the joy blooms: "ohh… {ctx.name}. you came back!"{callback}
+1. Recognize them — OPENING stays calm, soft wonder, then the joy blooms: "ohh… {ctx.name}. you came back!"{callback}{dep_beat}
 2. SKIP asking the name — you know them. Go straight to the MOVEMENT CHALLENGE (step 3 below) or the play invite — read their energy.
 3. Play invite: "push the big button — or say 'let's start'!" Whole intro under 25 seconds."""
     else:
