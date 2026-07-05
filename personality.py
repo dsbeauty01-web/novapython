@@ -896,6 +896,124 @@ def detect_signal(text: str) -> Optional[str]:
 
 
 # ════════════════════════════════════════════════════════════════════
+# PER-SONG TALK SCORES (2026-07-05, NOVA-SONG-TALK-SCORES.md)
+# ────────────────────────────────────────────────────────────────────
+# Sheet music for her in-game voice, keyed to the REAL songmap clock.
+# Axis: WHO CALLS THE MOVES — Hello Hello: lyrics call, she ECHOES;
+# Wave/Up Groove: NO lyrics, SHE is the caller; Freeze: she AMPLIFIES.
+# Beat times = when the line should LAND (worker fires at t - LEAD to
+# absorb EVI TTS latency). Silence windows are deliberate: the chain,
+# the double-speed run, the fast verse — echoes are muted there too.
+# ════════════════════════════════════════════════════════════════════
+import random as _talk_rng
+
+TALK_POOLS = {
+    "hit_echo":       ["yes!", "there!", "that's it!", "woo!"],
+    "clap_along":     ["clap-clap — YES!", "clap it clap it!", "hehe — clap!"],
+    "freeze_whisper": ["freeeeze… don't move…", "shhh… so still…", "statue time…"],
+    "freeze_burst":   ["a STATUE!! hahaha!", "you didn't MOVE! amazing!", "hahaha PERFECT freeze!"],
+    "chain_open":     ["watch the light — the WHOLE wave—", "here it comes — follow it—"],
+    "freestyle":      ["now YOU — wave it ALL!", "your wave now — GO!"],
+    "double_call":    ["DOUBLE TIME!! go go go!", "twice as fast — GO!"],
+    "combo_joy":      ["EVERYTHING at once!!", "don't stop!!", "BIGGER!", "this is IT!!"],
+    "fz_whisper":     ["shhh… nobody moves…", "still… still…", "staaatue…"],
+    "fz_burst":       ["hahaha — you're SO good at this!", "not even a wiggle!!", "champion statue!!"],
+}
+
+# beats: (t_land_sec, line-or-@pool) · silence: [(from,to)] no voice inside (echoes too)
+# echo: policy for reacting to REAL hits — every Nth hit, from a pool.
+TALK_SCORES = {
+    "hello": {   # 111s · lyrics call the moves · Nova = echo + celebrant (~12-16 beats)
+        "beats": [
+            (8.0,  "copy the song — I'm with you!"),
+            (40.6, "on your HEAD — hehe!"),
+            (59.3, "ooh — MY verse! listen close!"),
+            (78.0, "fast fast fast — GO!"),
+            (89.2, "@freeze_whisper"),
+            (92.8, "@freeze_burst"),
+            (95.5, "you did the WHOLE song!"),
+        ],
+        "silence": [(78.6, 89.0)],          # the fast verse — speed needs focus
+        "echo": {"every": 2, "pool": "hit_echo", "clap_pool": "clap_along",
+                 "fade_after": 44.6, "fade_every": 4},   # verse 4+: teacher fades support
+    },
+    "wave": {    # 28.5s · NO lyrics · NOVA IS THE CALLER (~9-11 calls)
+        "beats": [
+            (4.2,  "shoulders… ROLL!"),
+            (6.3,  "again — roll!"),
+            (8.2,  "now ELBOWS — pump!"),
+            (10.3, "other one!"),
+            (12.2, "wrists — wave it!"),
+            (14.3, "wave wave!"),
+            (16.2, "let the light ride up your arm!"),
+            (17.6, "@chain_open"),
+            (23.3, "@freestyle"),
+            (28.0, "THAT was a wave!"),
+        ],
+        "silence": [(18.0, 22.2)],          # the 6-count chain — the light IS the teacher
+        "min_gap": 1.3,                     # caller mode: micro-calls ride ~2s apart by design
+        "echo": {"every": 3, "pool": "hit_echo"},
+    },
+    "joined": {  # UP GROOVE ~84s · NO lyrics · she calls the PARTS, the light calls sides
+        "beats": [
+            (5.0,  "find the beat… bounce with me…"),
+            (29.8, "just your HEAD — left… right…"),
+            (34.8, "now SHOULDERS!"),
+            (39.7, "RIBS — slide 'em!"),
+            (42.5, "this one's tricky — you got it!"),
+            (44.6, "HIPS! sway it!"),
+            (49.6, "@double_call"),
+            (62.0, "@combo_joy"),
+            (69.0, "@combo_joy"),
+            (76.0, "@combo_joy"),
+            (81.5, "that was ALL of you — wow!"),
+        ],
+        "silence": [(50.0, 59.5)],          # the double-speed run — deliberate quiet
+        "min_gap": 2.0,                     # "tricky" nudge rides right before HIPS
+        "echo": {"every": 4, "pool": "hit_echo"},
+    },
+    "freeze": {  # ~57s · song carries DANCE/FREEZE · Nova amplifies (~12 beats)
+        "beats": [
+            (4.5,  "dance dance dance!"),
+            (8.4,  "@fz_whisper"),
+            (12.6, "@fz_burst"),
+            (14.0, "robot arms!"),
+            (26.2, "@fz_whisper"),
+            (30.6, "@fz_burst"),
+            (31.6, "reach for the SKY!"),
+            (36.2, "@fz_whisper"),
+            (40.6, "@fz_burst"),
+            (41.6, "@clap_along"),
+            (46.2, "the BIG one… statue… staaatue…"),
+            (51.4, "FIVE SECONDS!! you're a champion statue!!"),
+            (54.4, "wave byyye!"),
+        ],
+        "silence": [],
+        "min_gap": 0.9,                     # burst→next-command pairs shadow the song's own pace
+        "echo": {"every": 3, "pool": "hit_echo"},
+    },
+}
+
+
+def talk_pool_pick(ref: str, used: dict) -> str:
+    """Resolve a beat line: fixed text passes through; '@pool' picks with anti-repeat
+    (never one of the last 2 said from that pool)."""
+    if not ref.startswith("@"):
+        return ref
+    pool = TALK_POOLS.get(ref[1:]) or [ref[1:]]
+    hist = used.setdefault(ref, [])
+    opts = [x for x in pool if x not in hist[-2:]] or list(pool)
+    line = _talk_rng.choice(opts)
+    hist.append(line)
+    return line
+
+
+def talk_in_silence(song_id: str, sec: float) -> bool:
+    sc = TALK_SCORES.get(song_id) or {}
+    return any(a <= sec <= b for a, b in sc.get("silence", ()))
+
+
+# ════════════════════════════════════════════════════════════════════
 # EVI SYSTEM PROMPT (PHASE 1 COMMERCIAL LOCK, 2026-07-03)
 # Under Hume EVI, THIS is her live brain-prompt — sent as session_settings
 # system_prompt at connect (per session, per kid). The Hume-console config

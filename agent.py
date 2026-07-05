@@ -420,6 +420,9 @@ class NovaSessionState:
 
         elif ev == "music_tick":
             self.ctx.music_sec = float(event.get("sec", 0))
+            # TALK SCORE: every tick re-syncs the worker's song clock to the REAL
+            # music position (browser is the source of truth — pauses/lag included).
+            self._talk_t0 = time.time() - self.ctx.music_sec
             g = getattr(self, "game_gate", None)
             if g:
                 g.tick(self.ctx.music_sec, time.time())
@@ -611,6 +614,14 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 logger.info(f"[data] game-event: {event}")
                 state.push_event(event)
 
+                # TALK SCORE (2026-07-05): the browser announces the song start —
+                # arm the per-song score; it owns the in-game voice from here.
+                if event.get("event") == "song_start":
+                    _song = (event.get("song") or "").strip()
+                    state._talk_t0 = time.time() - float(event.get("sec", 0) or 0)
+                    logger.info(f"[TALK-SCORE] song_start '{_song}' (sec={event.get('sec', 0)})")
+                    asyncio.create_task(_run_talk_score(session, state, _song))
+
                 # If a hit/miss happened during DANCE, react immediately.
                 # PHASE 3: the router also handles song moments + edge events.
                 if state.ctx.phase == "dance" and event.get("event") in (
@@ -618,7 +629,15 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     "music_moment", "section", "rep_done", "free_fun", "idle",
                     "second_person", "singing", "mic_text", "away",
                 ):
-                    asyncio.create_task(_react_to_event(session, state, agent, event))
+                    if getattr(state, "_talk_score_active", False):
+                        # the score is the conductor: real hits get the per-song echo;
+                        # routine router chatter is suppressed (kid speech still routes).
+                        if event.get("event") in ("hit", "first_hit", "clean_hit", "freeze_hit"):
+                            asyncio.create_task(_talk_echo(session, state, event.get("event")))
+                        elif event.get("event") in ("mic_text", "singing", "second_person", "away"):
+                            asyncio.create_task(_react_to_event(session, state, agent, event))
+                    else:
+                        asyncio.create_task(_react_to_event(session, state, agent, event))
 
                 # POINT 4 (2026-07-01): INTRO try-move — during the intro the browser
                 # detects the move Nova asked for (e.g. a clap), lights the kid's hands,
@@ -928,6 +947,92 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
     state._dance_invited = True
     await _nova_say(session, _CHALLENGE_CLOSE_WIN if hit else _CHALLENGE_CLOSE_MISS)
     logger.info(f"[CHALLENGE] done (hit={hit}) → dance invite out")
+
+
+# ════════════════════════════════════════════════════════════════════
+# TALK SCORE ENGINE (2026-07-05, NOVA-SONG-TALK-SCORES.md)
+# The browser announces song_start {song, sec} and 1s music_ticks; the
+# worker plays the song's TALK SCORE off that clock — every line fired
+# at (t_land - LEAD) so the EVI TTS lands ON the beat. Hard rules:
+# one line per 2.5s (priority-drop), zero voice inside silence windows.
+# ════════════════════════════════════════════════════════════════════
+_TALK_LEAD = float(os.getenv("NOVA_TALK_LEAD_SEC", "1.0"))
+_TALK_CAP_SEC = 2.5
+
+
+def _talk_now_sec(state) -> float:
+    t0 = getattr(state, "_talk_t0", None)
+    return (time.time() - t0) if t0 else 0.0
+
+
+async def _run_talk_score(session: AgentSession, state: NovaSessionState, song_id: str):
+    score = personality.TALK_SCORES.get(song_id)
+    if not score:
+        logger.info(f"[TALK-SCORE] no score for '{song_id}' — old router stays")
+        return
+    if getattr(state, "_talk_score_song", None) == song_id and getattr(state, "_talk_score_active", False):
+        return   # already running for this song
+    state._talk_score_song = song_id
+    state._talk_score_active = True
+    state._talk_used = getattr(state, "_talk_used", {})
+    state._echo_n = 0
+    cap = float(score.get("min_gap", _TALK_CAP_SEC))   # wave rides tighter than 2.5s by design
+    logger.info(f"[TALK-SCORE] armed '{song_id}' — {len(score['beats'])} beats, lead {_TALK_LEAD}s, gap {cap}s")
+    try:
+        for t_land, ref in score["beats"]:
+            # wait for (t_land - LEAD) on the live music clock (re-synced by music_ticks)
+            while True:
+                if state.ctx.phase != "dance" or state.game_done.is_set() or not state.active:
+                    logger.info(f"[TALK-SCORE] '{song_id}' stopped at beat {t_land}s (phase left dance)")
+                    return
+                wait = (t_land - _TALK_LEAD) - _talk_now_sec(state)
+                if wait <= 0:
+                    break
+                await asyncio.sleep(min(wait, 0.25))
+            now_sec = _talk_now_sec(state)
+            if now_sec - t_land > 3.0:
+                logger.info(f"[TALK-SCORE] beat {t_land}s skipped (clock already at {now_sec:.1f}s)")
+                continue
+            if personality.talk_in_silence(song_id, t_land) and personality.talk_in_silence(song_id, now_sec):
+                logger.info(f"[TALK-SCORE] beat {t_land}s inside a silence window — dropped")
+                continue
+            if time.time() - getattr(state, "_last_nova_at", 0) < cap:
+                logger.info(f"[TALK-SCORE] beat {t_land}s dropped ({cap}s gap cap)")
+                continue
+            line = personality.talk_pool_pick(ref, state._talk_used)
+            await _nova_say(session, line)
+            state._last_nova_at = time.time()
+            logger.info(f"[TALK-SCORE] {song_id} @{now_sec:.1f}s (land {t_land}s) → '{line}'")
+    finally:
+        state._talk_score_active = False
+        logger.info(f"[TALK-SCORE] '{song_id}' score complete")
+
+
+async def _talk_echo(session: AgentSession, state: NovaSessionState, ev_name: str):
+    """Per-song HIT echo — the kid really moved; echo on every Nth hit, from the
+    song's pool, never inside a silence window, never over the 2.5s cap."""
+    song = getattr(state, "_talk_score_song", None)
+    sc = personality.TALK_SCORES.get(song or "")
+    pol = sc.get("echo") if sc else None
+    if not pol:
+        return
+    sec = _talk_now_sec(state)
+    if personality.talk_in_silence(song, sec):
+        return
+    state._echo_n = getattr(state, "_echo_n", 0) + 1
+    every = int(pol.get("every", 2))
+    if sec >= float(pol.get("fade_after", 1e9)):
+        every = int(pol.get("fade_every", every))   # teacher fades as competence grows
+    if state._echo_n % every:
+        return
+    if time.time() - getattr(state, "_last_nova_at", 0) < _TALK_CAP_SEC:
+        return
+    cur = (getattr(state.ctx, "current_move", "") or "").lower()
+    pool = pol.get("clap_pool") if ("clap" in cur and pol.get("clap_pool")) else pol["pool"]
+    line = personality.talk_pool_pick("@" + pool, getattr(state, "_talk_used", {}))
+    await _nova_say(session, line)
+    state._last_nova_at = time.time()
+    logger.info(f"[TALK-ECHO] {ev_name} #{state._echo_n} @{sec:.1f}s → '{line}'")
 
 
 _OAI_CLIENT = None
