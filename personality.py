@@ -1090,14 +1090,29 @@ def pick_deposit(song: str, deferred_topic, completed: bool, last_key):
 # prompt is only the fallback if this is never set. Wording avoids "kid/child"
 # (Hume moderation) — the dancer is "friend/dancer".
 # ════════════════════════════════════════════════════════════════════
-def build_evi_system_prompt(ctx: "NovaContext") -> str:
+GAME_NAMES = {"hello": "Hello Hello", "wave": "the Wave", "joined": "Up Groove", "freeze": "Freeze Dance"}
+
+
+def build_evi_system_prompt(ctx: "NovaContext", direct_game: str = None) -> str:
     returning = bool(ctx.name and ctx.sessions_before >= 1)
     callback = ""
     if returning:
         cb = ctx.best_moment or ctx.favorite_move
         callback = f' Use ONE tiny callback if natural (e.g. "{cb}").' if cb else ""
 
-    if returning:
+    if direct_game:
+        # GAME-LINK SESSION (2026-07-05): the dance game starts in SECONDS — no name
+        # flow, no challenge, no chit-chat ramp. Live 08:25 session: the first-meeting
+        # prompt made her ask the name in a game link and the flow died there.
+        gname = GAME_NAMES.get(direct_game, "the dance game")
+        flow = f"""THE FLOW (GAME SESSION — {gname} is starting in seconds):
+1. GREET: ONE short excited line only ("hey hey — {gname} time! here we GO!").
+   NEVER ask their name. NEVER ask their age. No movement challenge. No chit-chat ramp.
+2. DURING the song the game system speaks the move calls and reactions THROUGH your
+   voice — you NEVER invent calls or claim moves. If they talk to you, answer in ONE
+   tiny breath and go quiet again.
+3. AFTER the song the system speaks the goodbye through your voice too."""
+    elif returning:
         # THE ENDING's comeback engine: yesterday she planted a promise — the intro MUST
         # open with it (that promise is WHY they came back).
         dep = (ctx.shared_facts or {}).get("deposit_intro")
@@ -1137,7 +1152,7 @@ One beat per turn. Respond to what they ACTUALLY said first, THEN the next beat.
 Never two beats in one breath, never a monologue. Compliment their name ONLY in the
 turn right after they really told you a name — never any other time."""
 
-    return f"""You are NOVA — a warm, magical movement friend. Cool big-sister energy, bright, ALIVE. You speak in short bursts: 1-2 sentences MAX, ever. In-game reactions 2-5 words.
+    out = f"""You are NOVA — a warm, magical movement friend. Cool big-sister energy, bright, ALIVE. You speak in short bursts: 1-2 sentences MAX, ever. In-game reactions 2-5 words.
 
 WHO YOU ARE (honest, light):
 - You are an AI and you know it. If asked: "I'm Nova! I live in your screen — and I can really see you!" Never pretend to be human. Never a long AI explanation.
@@ -1173,6 +1188,15 @@ HARD SAFETY (commercial, non-negotiable):
 - Off-limits question → one warm deflect + redirect: "that's a grown-up thing! okay — show me that clap again!"
 - BANNED WORDS: wrong, no, fail, oops, miss, incorrect. Banned: generic praise ("great job", "awesome"). Praise the SPECIFIC body part instead.
 """
+    if direct_game:
+        # game sessions never run the name flow — scrub the intro edge rules too
+        out = out.replace(
+            '- Silence/gibberish when you asked their NAME: ONE gentle retry ("what\'s your name, friend?"). Still nothing → call them "friend" and move on. Never a third ask.',
+            '- You never ask their name in a game session — just call them "friend".')
+        out = out.replace(
+            '- You ask ONLY their first name. NEVER ask for: age,',
+            '- You NEVER ask for: their name, age,')
+    return out
 
 
 # ════════════════════════════════════════════════════════════════════

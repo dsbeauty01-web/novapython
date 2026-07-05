@@ -2181,7 +2181,7 @@ async def entrypoint(ctx: JobContext):
             # is the wired fallback. Hume-only still holds: voice is Kora either way.
             evi_prompt = None
             try:
-                evi_prompt = personality.build_evi_system_prompt(state.ctx)
+                evi_prompt = personality.build_evi_system_prompt(state.ctx, direct_game=direct_game)
                 logger.info(f"[nova-evi] session system_prompt built ({len(evi_prompt)} chars, returning={bool(state.ctx.name and state.ctx.sessions_before>=1)})")
             except Exception as pe:
                 logger.exception(f"[nova-evi] prompt build FAILED → using Hume config prompt: {pe}")
