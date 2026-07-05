@@ -1806,14 +1806,35 @@ async def entrypoint(ctx: JobContext):
     kid_id = None
     voice_only = False
     direct_game = None
+    # ROOT-CAUSE FIX (2026-07-05): ctx.room.metadata is EMPTY before ctx.connect() —
+    # every session ever ran as anon-* (memory never got real kid ids) and the
+    # voiceOnly/directGame flags were silently lost. The JOB carries the room info
+    # (and the dispatch metadata) BEFORE connect — read all three sources.
+    _meta_sources = []
     try:
-        if ctx.room.metadata:
-            meta = json.loads(ctx.room.metadata)
-            kid_id = meta.get("kidId")
-            voice_only = bool(meta.get("voiceOnly"))
-            direct_game = meta.get("directGame") or None
+        _meta_sources.append(("room", ctx.room.metadata))
     except Exception:
         pass
+    try:
+        _meta_sources.append(("job.room", getattr(getattr(ctx.job, "room", None), "metadata", None)))
+    except Exception:
+        pass
+    try:
+        _meta_sources.append(("job", getattr(ctx.job, "metadata", None)))
+    except Exception:
+        pass
+    for _src, _raw in _meta_sources:
+        if not _raw:
+            continue
+        try:
+            meta = json.loads(_raw)
+            kid_id = meta.get("kidId") or kid_id
+            voice_only = voice_only or bool(meta.get("voiceOnly"))
+            direct_game = direct_game or meta.get("directGame") or None
+            logger.info(f"[nova-v207] metadata via {_src}: kidId={kid_id} voiceOnly={voice_only} directGame={direct_game}")
+            break
+        except Exception:
+            continue
 
     state = NovaSessionState(kid_id=kid_id)
     if direct_game:
