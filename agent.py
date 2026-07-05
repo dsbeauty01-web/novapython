@@ -992,6 +992,19 @@ def _talk_now_sec(state) -> float:
     return (time.time() - t0) if t0 else 0.0
 
 
+async def _talk_say_async(session: AgentSession, state: NovaSessionState, line: str, tag: str):
+    """Non-blocking speech for the score: _nova_say awaits the WHOLE EVI generation
+    (25s stalls seen live 08:30) — the scheduler must never wait on it, or beats slip.
+    _say_inflight keeps lines from piling into EVI."""
+    state._say_inflight = True
+    try:
+        await _nova_say(session, line)
+    finally:
+        state._say_inflight = False
+        state._last_nova_at = time.time()
+        logger.info(f"[{tag}] line delivered → '{line}'")
+
+
 async def _run_talk_score(session: AgentSession, state: NovaSessionState, song_id: str):
     score = personality.TALK_SCORES.get(song_id)
     if not score:
@@ -1023,13 +1036,15 @@ async def _run_talk_score(session: AgentSession, state: NovaSessionState, song_i
             if personality.talk_in_silence(song_id, t_land) and personality.talk_in_silence(song_id, now_sec):
                 logger.info(f"[TALK-SCORE] beat {t_land}s inside a silence window — dropped")
                 continue
+            if getattr(state, "_say_inflight", False):
+                logger.info(f"[TALK-SCORE] beat {t_land}s dropped (a line is still speaking)")
+                continue
             if time.time() - getattr(state, "_last_nova_at", 0) < cap:
                 logger.info(f"[TALK-SCORE] beat {t_land}s dropped ({cap}s gap cap)")
                 continue
             line = personality.talk_pool_pick(ref, state._talk_used)
-            await _nova_say(session, line)
-            state._last_nova_at = time.time()
-            logger.info(f"[TALK-SCORE] {song_id} @{now_sec:.1f}s (land {t_land}s) → '{line}'")
+            asyncio.create_task(_talk_say_async(session, state, line, "TALK-SCORE"))
+            logger.info(f"[TALK-SCORE] {song_id} @{now_sec:.1f}s (land {t_land}s) → firing '{line}'")
     finally:
         state._talk_score_active = False
         logger.info(f"[TALK-SCORE] '{song_id}' score complete")
@@ -1052,14 +1067,15 @@ async def _talk_echo(session: AgentSession, state: NovaSessionState, ev_name: st
         every = int(pol.get("fade_every", every))   # teacher fades as competence grows
     if state._echo_n % every:
         return
+    if getattr(state, "_say_inflight", False):
+        return
     if time.time() - getattr(state, "_last_nova_at", 0) < _TALK_CAP_SEC:
         return
     cur = (getattr(state.ctx, "current_move", "") or "").lower()
     pool = pol.get("clap_pool") if ("clap" in cur and pol.get("clap_pool")) else pol["pool"]
     line = personality.talk_pool_pick("@" + pool, getattr(state, "_talk_used", {}))
-    await _nova_say(session, line)
-    state._last_nova_at = time.time()
-    logger.info(f"[TALK-ECHO] {ev_name} #{state._echo_n} @{sec:.1f}s → '{line}'")
+    logger.info(f"[TALK-ECHO] {ev_name} #{state._echo_n} @{sec:.1f}s → firing '{line}'")
+    asyncio.create_task(_talk_say_async(session, state, line, "TALK-ECHO"))
 
 
 _OAI_CLIENT = None
