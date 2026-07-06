@@ -781,7 +781,18 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                         return
                     state._reveal_greeted = True
                     llm_obj = getattr(state, "_evi_model", None) or getattr(session, "llm", None)
-                    if hasattr(llm_obj, "fire_greeting"):
+                    # CLIP GREETING (root fix): first meetings get the pre-rendered hello
+                    # INSTANTLY (the 25-45s cold gen was the single worst latency wart).
+                    # Returning kids keep the live EVI greet (deposit opener needs her brain).
+                    _returning = bool(state.ctx.name and state.ctx.sessions_before >= 1)
+                    if (not _returning and _CLIP_INDEX and os.getenv("NOVA_CLIPS", "1") == "1"
+                            and not getattr(state, "_direct_game", None)):
+                        if hasattr(llm_obj, "_greet_fired"):
+                            llm_obj._greet_fired = True   # EVI greet suppressed — clip owns it
+                        logger.info("[REVEAL] greeting via CLIP (instant)")
+                        asyncio.create_task(_nova_say(
+                            session, "hi! I'm Nova — your magic friend! …what's your name?"))
+                    elif hasattr(llm_obj, "fire_greeting"):
                         _live = bool(getattr(llm_obj, "connected_evt", None) and llm_obj.connected_evt.is_set())
                         logger.info(f"[REVEAL] greeting fired → EVI (ws_live={_live})")
                         if not _live:
@@ -836,14 +847,42 @@ def _evi_on() -> bool:
     return os.getenv("USE_EVI", "").lower() in ("1", "true", "yes", "on")
 
 
+# ── CLIP VOICE (2026-07-06, the root fix): every FIXED line is pre-rendered in the
+# real Kora voice and shipped to the browser. _nova_say looks the exact text up in
+# the clip index — hit = the browser plays it in MILLISECONDS (play-clip packet);
+# miss (dynamic text) = the EVI live path as before. One change point, every
+# scripted call site upgraded at once. Kill-switch: NOVA_CLIPS=0.
+_CLIP_INDEX: dict = {}
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "clips-manifest.json"),
+              encoding="utf-8") as _cf:
+        _CLIP_INDEX = {v.strip(): k for k, v in json.load(_cf).items()}
+    pass
+except Exception as _ce:
+    _CLIP_INDEX = {}
+if _CLIP_INDEX:
+    logging.getLogger("nova-v207").info(f"[CLIP] index loaded: {len(_CLIP_INDEX)} lines clip-backed")
+
+
 async def _nova_say(session: AgentSession, line: str):
-    """Speak an EXACT line, EVI-safe. THE one speech path.
-    Under EVI, session.say() is unsupported AND generate_reply(instructions=) speaks the
-    given text verbatim (assistant_input) — so we pass the FINAL LINE (never a meta-prompt).
-    Without EVI, session.say() speaks the line directly. Either way: Nova says the LINE,
-    never the prompt. (This is the fix for 'Nova read the AI instructions out loud'.)"""
+    """Speak an EXACT line — THE one speech path.
+    1) CLIP FIRST: exact text found in the pre-rendered pack → browser plays the real
+       Kora audio instantly (the latency root-fix).
+    2) EVI fallback: dynamic text → generate_reply(instructions=) speaks it verbatim.
+    Never a meta-prompt (that's the 'read the AI instructions aloud' fix)."""
     if not line:
         return False
+    st = getattr(session, "_nova_state", None)
+    cid = _CLIP_INDEX.get(line.strip()) if os.getenv("NOVA_CLIPS", "1") == "1" else None
+    if cid and st is not None and getattr(st, "room", None) is not None:
+        try:
+            await st.room.local_participant.publish_data(
+                json.dumps({"kind": "play-clip", "id": cid}).encode("utf-8"), reliable=True)
+            st._last_nova_at = time.time()
+            logger.info(f"[CLIP] ▶ {cid}  ('{line[:50]}')")
+            return True
+        except Exception as e:
+            logger.warning(f"[CLIP] publish failed → EVI fallback: {e}")
     try:
         if _evi_on():
             await session.generate_reply(instructions=line)
@@ -1028,7 +1067,8 @@ async def _run_talk_score(session: AgentSession, state: NovaSessionState, song_i
     state._talk_used = getattr(state, "_talk_used", {})
     state._echo_n = 0
     cap = float(score.get("min_gap", _TALK_CAP_SEC))   # wave rides tighter than 2.5s by design
-    logger.info(f"[TALK-SCORE] armed '{song_id}' — {len(score['beats'])} beats, lead {_TALK_LEAD}s, gap {cap}s")
+    lead = 0.35 if (_CLIP_INDEX and os.getenv("NOVA_CLIPS", "1") == "1") else _TALK_LEAD
+    logger.info(f"[TALK-SCORE] armed '{song_id}' — {len(score['beats'])} beats, lead {lead}s, gap {cap}s")
     try:
         for t_land, ref in score["beats"]:
             # wait for (t_land - LEAD) on the live music clock (re-synced by music_ticks)
@@ -1036,7 +1076,7 @@ async def _run_talk_score(session: AgentSession, state: NovaSessionState, song_i
                 if state.ctx.phase != "dance" or state.game_done.is_set() or not state.active:
                     logger.info(f"[TALK-SCORE] '{song_id}' stopped at beat {t_land}s (phase left dance)")
                     return
-                wait = (t_land - _TALK_LEAD) - _talk_now_sec(state)
+                wait = (t_land - lead) - _talk_now_sec(state)
                 if wait <= 0:
                     break
                 await asyncio.sleep(min(wait, 0.25))
@@ -2338,6 +2378,7 @@ async def entrypoint(ctx: JobContext):
     # Wire the pre-cached filler system (instant reactions while the LLM cooks).
     # Guarded so a filler problem can never block the session from starting.
     state.session = session
+    session._nova_state = state   # _nova_say reads room/state through the session (clip path)
     try:
         state.filler = FillerPlayer()
         logger.info(f"[filler] system ready (enabled={state.filler.enabled})")
