@@ -1507,17 +1507,45 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
         await _handle_dance_mic_text(session, state, agent, text)
         return
 
+    # ── TYPED TEXT IS FIRST-CLASS INPUT (2026-07-06) ─────────────────
+    # The chat box was dead for months; now that it works, typed text must drive
+    # the SAME machinery as voice: name capture, yes/done signals, the challenge,
+    # the name-wait. (Live: typed "im ready" was ignored → sparkle-line loop.)
+    if state.ctx.phase in ("intro", "recognition"):
+        if (not state.ctx.name or _is_explicit_name(text)):
+            nm = _extract_name(text)
+            if nm and nm != state.ctx.name:
+                state.ctx.name = nm
+                try:
+                    memory.store.update(state.kid_id, name=nm)
+                except Exception:
+                    pass
+                logger.info(f"[nova] captured name (typed): {nm}")
+        try:
+            state.kid_spoke.set()          # the name-wait listens for this
+        except Exception:
+            pass
+
     # ── SHE'S A COACH, NOT A CHATBOT ─────────────────────────────────
-    # 1. Kid says start/dance/play/go/ready → hype line + STRAIGHT to the game picker.
+    # 1. Kid says start/dance/play/go/ready → challenge first (if not run), else picker.
     # 2. Chit-chat cap: after 4 exchanges in the intro, she pushes to the game herself.
-    if getattr(state.ctx, "phase", "recognition") == "recognition":
+    # (phase gate was "recognition"-only — live phase is "intro"; 3rd hit of this bug class)
+    if state.ctx.phase in ("intro", "recognition"):
         if _wants_to_start(text):
-            logger.info(f"[GAME-PUSH] start intent heard in '{text[:40]}'")
+            if not getattr(state, "_challenge_ran", False):
+                logger.info(f"[CHALLENGE] typed start intent '{text[:40]}' → scripted challenge first")
+                _rm = getattr(state, "room", None)
+                if _rm is not None:
+                    asyncio.create_task(_run_intro_challenge(session, state, _rm))
+                return
+            logger.info(f"[GAME-PUSH] typed start intent '{text[:40]}' → picker")
+            state.last_kid_signal = "yes"   # the yes-wait in _run_nova fires the picker
             asyncio.create_task(_push_to_game(state, session, "YESSS — let's dance! pick your game!"))
             return                       # no chatbot reply on top of the push
         state._chat_turns = getattr(state, "_chat_turns", 0) + 1
         if state._chat_turns >= 4:
             logger.info("[GAME-PUSH] chat cap reached → pushing to the game")
+            state.last_kid_signal = "yes"
             asyncio.create_task(_push_to_game(
                 state, session, "okay okay — enough talking, time to MOVE! pick a game!"))
             return
