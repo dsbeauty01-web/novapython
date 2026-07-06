@@ -920,6 +920,13 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
     if getattr(state, "_challenge_ran", False):
         return
     state._challenge_ran = True
+    # BREATH (2026-07-06): never storm the kid — the name ack / her current line
+    # finishes first, then ONE human beat, THEN the first cue.
+    for _ in range(40):
+        if not getattr(state, "_is_speaking", False) and not getattr(state, "_say_inflight", None):
+            break
+        await asyncio.sleep(0.25)
+    await asyncio.sleep(2.0)
     hit = False
     for mv in INTRO_CHALLENGE:
         # ABORT if the intro is over (kid pressed the button / game started) — the
@@ -1397,6 +1404,11 @@ async def _silence_driver(state: NovaSessionState, session: AgentSession):
         try:
             if state.ctx.phase not in ("intro", "recognition"):
                 logger.info(f"[SILENCE-DRIVER] phase moved to {state.ctx.phase} → standing down")
+                return
+            if getattr(state, "_dance_invited", False):
+                # invite is out — nudging now replays stale challenge beats
+                # ("still waiting on that nudge…" AFTER the picker, live 08:39)
+                logger.info("[SILENCE-DRIVER] dance invited → standing down for good")
                 return
             now = time.time()
             ln, lk = getattr(state, "_last_nova_at", 0), getattr(state, "_last_kid_at", 0)
@@ -1944,6 +1956,15 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
             await asyncio.sleep(1.0)
         await _end_game(session, state, agent, state.ctx.observed_visual)
         return
+
+    # ── ANCHOR TO HER VOICE (2026-07-06 "john"): EVI cold-gen delays her greet
+    # 15-40s while the intro timers ran on WALL CLOCK — the challenge fired 2s
+    # after "what's your name?" and steamrolled the kid. Nothing below starts
+    # counting until she has ACTUALLY spoken once. ──
+    _anchor0 = time.time()
+    while (getattr(state, "_last_nova_at", 0) == 0 and time.time() - _anchor0 < 45.0
+           and state.active and not state.game_done.is_set()):
+        await asyncio.sleep(0.3)
 
     # ── INTRO: capture the name from the first utterance. The brain (intro
     # persona) echoes it warmly AND invites them to play — one voice. ──
