@@ -1929,15 +1929,20 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
             await _end_game(session, state, agent, None)
             return
 
-    # ── PLAY: brain hosts; eyes + heartbeat on ──
-    state.ctx.phase = "play"
-    await agent.refresh_instructions()
-    logger.info("[nova] → PLAY phase (brain-led, ambient vision on)")
-    vis = asyncio.create_task(_ambient_vision_loop(room, state, agent))
+    # ── THEY SAID YES → open the game picker and step back. ──
+    # 2026-07-06 live: the legacy PLAY moves-host loop (7s vision polling + beat
+    # heartbeat) hijacked the flow after the challenge — "ready to make a move?"
+    # loops, kid speech drowned, vision spam. nova-joined's game phase is browser-
+    # driven end to end; the worker rides along on packets (talk score, ending).
+    # Vision stays: the ONE pre-reveal snapshot — no polling.
+    logger.info("[nova] YES received → opening the game picker (host loop removed)")
     try:
-        await _play_heartbeat(session, state, agent, room)
-    finally:
-        vis.cancel()
+        await room.local_participant.publish_data(
+            json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True)
+    except Exception as e:
+        logger.warning(f"[nova] go-picker publish failed: {e}")
+    while state.active and not state.game_done.is_set():
+        await asyncio.sleep(1.0)
 
     # ── END ──
     await _end_game(session, state, agent, state.ctx.observed_visual)
@@ -2505,7 +2510,26 @@ async def entrypoint(ctx: JobContext):
 # ────────────────────────────────────────────────────────────────────────
 # Worker boot
 # ────────────────────────────────────────────────────────────────────────
+def _keepwarm_loop():
+    """KEEP-WARM (2026-07-06): this background worker NEVER sleeps — it keeps the free
+    web service hot. GitHub's '*/5' cron actually fires ~hourly (free-tier throttling,
+    measured) while Render sleeps at 15 idle minutes → 52s cold-start at tap. A ping
+    from here every 4 minutes closes that hole for good."""
+    import threading as _t  # noqa: F401 (documentation: started as a daemon thread)
+    import urllib.request
+    url = os.getenv("NOVA_WEB_HEALTH_URL", "https://novapython.onrender.com/health")
+    while True:
+        try:
+            urllib.request.urlopen(url, timeout=20).read()
+        except Exception:
+            pass
+        time.sleep(240)
+
+
 if __name__ == "__main__":
+    import threading
+    threading.Thread(target=_keepwarm_loop, daemon=True, name="nova-keepwarm").start()
+    logger.info("[keepwarm] worker-side web pinger started (240s cadence)")
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,

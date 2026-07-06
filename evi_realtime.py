@@ -712,6 +712,7 @@ class HumeEVIRealtimeSession(
     def _handle_user_interruption(self, msg: dict[str, Any]) -> None:
         # EVI detected the user barged in. Stop forwarding the current assistant
         # audio so the avatar stops talking immediately.
+        logger.info("[BARGE-IN] EVI user_interruption → assistant audio cleared")
         self.emit("input_speech_started", InputSpeechStartedEvent())
         self._finish_generation()
 
