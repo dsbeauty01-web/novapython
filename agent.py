@@ -1402,7 +1402,7 @@ async def _silence_driver(state: NovaSessionState, session: AgentSession):
             ln, lk = getattr(state, "_last_nova_at", 0), getattr(state, "_last_kid_at", 0)
             if not ln:                      # she hasn't spoken yet — wait
                 continue
-            if now - ln < 7.0 or (lk and now - lk < 7.0):
+            if now - ln < 10.0 or (lk and now - lk < 10.0):
                 continue                    # someone spoke recently — conversation alive
             nudges += 1
             logger.info(f"[SILENCE-DRIVER] {int(now-ln)}s quiet → nudge #{nudges} (retry/fallback/advance)")
@@ -1521,6 +1521,11 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
                 except Exception:
                     pass
                 logger.info(f"[nova] captured name (typed): {nm}")
+                # DETERMINISTIC ACK (2026-07-06 live "bobo"): mid-challenge her free
+                # reply gets drowned by script lines — the kid MUST hear their name
+                # land. One scripted ack cuts through, guaranteed.
+                asyncio.create_task(_talk_say_async(
+                    session, state, f"{nm}! hi {nm} — love it!", "NAME-ACK"))
         try:
             state.kid_spoke.set()          # the name-wait listens for this
         except Exception:
@@ -1817,7 +1822,7 @@ def _extract_name(text: Optional[str]) -> Optional[str]:
     import re
     t = text.strip()
     # Strong explicit pattern — trust it even if the sentence has a '?'
-    m = re.search(r"(?:my name is|i'm|i am|call me|name's|they call me)\s+([A-Za-z][A-Za-z\-']{1,20})", t, re.I)
+    m = re.search(r"(?:my name is|i'?m|i am|im|call me|name's|they call me)\s+([A-Za-z][A-Za-z\-']{1,20})", t, re.I)
     if m:
         cand = m.group(1)
     else:
@@ -1842,7 +1847,7 @@ def _is_explicit_name(text: Optional[str]) -> bool:
     if not text:
         return False
     import re
-    return bool(re.search(r"(?:my name is|call me|name's|they call me|i'm |i am )", text, re.I))
+    return bool(re.search(r"(?:my name is|call me|name's|they call me|i'?m |i am |im )", text, re.I))
 
 
 async def _ambient_vision_loop(room: rtc.Room, state: NovaSessionState,
