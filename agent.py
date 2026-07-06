@@ -1541,6 +1541,11 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
                 # land. One scripted ack cuts through, guaranteed.
                 asyncio.create_task(_talk_say_async(
                     session, state, f"{nm}! hi {nm} — love it!", "NAME-ACK"))
+                # SINGLE VOICE (live "shoso" 11:28): ALSO sending the raw text as a
+                # user turn made EVI garble the two injections and RECITE ITS OWN
+                # PROMPT out loud. The ack IS the reply (and puts the name in her
+                # context); skip the chatbot turn for this message entirely.
+                return
         try:
             state.kid_spoke.set()          # the name-wait listens for this
         except Exception:
