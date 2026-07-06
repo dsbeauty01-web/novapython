@@ -1912,6 +1912,15 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
     state.ctx.phase = "intro"
     await agent.refresh_instructions()
 
+    # DIRECT-GAME (?game= link): no intro flow at all — the browser auto-launches the
+    # game; the worker rides along (talk score + ending are packet-driven).
+    if getattr(state, "_direct_game", None):
+        logger.info("[nova] DIRECT-GAME session → intro flow skipped entirely")
+        while state.active and not state.game_done.is_set():
+            await asyncio.sleep(1.0)
+        await _end_game(session, state, agent, state.ctx.observed_visual)
+        return
+
     # ── INTRO: capture the name from the first utterance. The brain (intro
     # persona) echoes it warmly AND invites them to play — one voice. ──
     if not state.ctx.name:
@@ -1946,16 +1955,25 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
             await _run_intro_challenge(session, state, room)
     asyncio.create_task(_challenge_fallback())
 
-    # ── wait for a 'yes' (the brain's intro reply does the inviting) ──
-    accepted = await _wait_for_signal(state, "yes", timeout=30.0)
+    # ── the challenge is the heart of the intro: wait for it to run + finish
+    # (started by the kid's first yes or the 18s fallback), capped so nothing wedges.
+    _cw0 = time.time()
+    while ((not getattr(state, "_challenge_ran", False) or getattr(state, "_challenge_active", None))
+           and time.time() - _cw0 < 75.0 and state.active and not state.game_done.is_set()
+           and state.ctx.phase in ("intro", "recognition")):
+        await asyncio.sleep(0.5)
+
+    # ── SHE LEADS (2026-07-06): wait briefly for a 'yes' — then take them to the
+    # dance HERSELF. The old 30s+90s wait meant a kid who said "no", chattered, or
+    # went quiet NEVER danced (it ended in a goodbye). A "no" or silence now gets a
+    # warm leading line and the picker opens anyway — the dance is the product.
+    accepted = await _wait_for_signal(state, "yes", timeout=12.0)
     if state.game_done.is_set():
         await _end_game(session, state, agent, None)
         return
-    if not accepted:
-        accepted = await _wait_for_signal(state, "yes", timeout=90.0)
-        if not accepted or state.game_done.is_set():
-            await _end_game(session, state, agent, None)
-            return
+    if not accepted and state.ctx.phase in ("intro", "recognition"):
+        logger.info("[nova] no clear YES in 12s → SHE LEADS: picker opens anyway")
+        await _nova_say(session, "come — I'll show you! let's pick a game together!")
 
     # ── THEY SAID YES → open the game picker and step back. ──
     # 2026-07-06 live: the legacy PLAY moves-host loop (7s vision polling + beat
@@ -1963,12 +1981,13 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
     # loops, kid speech drowned, vision spam. nova-joined's game phase is browser-
     # driven end to end; the worker rides along on packets (talk score, ending).
     # Vision stays: the ONE pre-reveal snapshot — no polling.
-    logger.info("[nova] YES received → opening the game picker (host loop removed)")
-    try:
-        await room.local_participant.publish_data(
-            json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True)
-    except Exception as e:
-        logger.warning(f"[nova] go-picker publish failed: {e}")
+    if state.ctx.phase in ("intro", "recognition"):   # kid may have pressed the button already
+        logger.info("[nova] intro complete → opening the game picker (host loop removed)")
+        try:
+            await room.local_participant.publish_data(
+                json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True)
+        except Exception as e:
+            logger.warning(f"[nova] go-picker publish failed: {e}")
     while state.active and not state.game_done.is_set():
         await asyncio.sleep(1.0)
 
