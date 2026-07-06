@@ -1571,12 +1571,31 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
         logger.error(f"[filler] user-said hook error: {e}")
     await state.pace.acquire()
     await agent.refresh_instructions()
+    # TYPED-REPLY FIX (2026-07-06 live): EVI SWALLOWS a text user_input that lands while
+    # SHE is speaking — [HEAR] confirmed the text arrived, but no assistant turn ever
+    # started (typed chat felt dead). Wait for her current line to finish (cap 8s)
+    # before sending, and if no reply begins within 5s, resend the text once.
+    for _ in range(32):
+        if not getattr(state, "_is_speaking", False):
+            break
+        await asyncio.sleep(0.25)
+    _before = getattr(state, "_last_nova_at", 0)
     logger.info("[BRAIN] generating reply to kid input...")
     try:
         await session.generate_reply(user_input=text)
         logger.info(f"[BRAIN] reply call returned for: '{text[:40]}'")
     except Exception as e:
         logger.exception(f"[BRAIN] generate_reply FAILED for kid input: {e}")
+
+    async def _ensure_reply():
+        await asyncio.sleep(5.0)
+        if getattr(state, "_last_nova_at", 0) <= _before and state.active and not state.game_done.is_set():
+            logger.info(f"[BRAIN] typed text got NO reply in 5s → resending once: '{text[:40]}'")
+            try:
+                await session.generate_reply(user_input=text)
+            except Exception as e2:
+                logger.warning(f"[BRAIN] typed-text resend failed: {e2}")
+    asyncio.create_task(_ensure_reply())
 
 
 def _harvest_facts(state: NovaSessionState, text: str):
