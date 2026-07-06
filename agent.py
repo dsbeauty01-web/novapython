@@ -376,6 +376,19 @@ class NovaSessionState:
             if new_phase in ("recognition", "dance", "goodbye"):
                 logger.info(f"[state] phase {self.ctx.phase} → {new_phase}")
                 self.ctx.phase = new_phase
+                # REAL-TIME AWARENESS (2026-07-06): her brain learns the phase changed
+                # THE INSTANT it happens — no more finishing old-phase thoughts late.
+                _model = getattr(self, "_evi_model", None)
+                if _model is not None and hasattr(_model, "push_context"):
+                    _now_note = {
+                        "dance": "(RIGHT NOW: the song just started and they are DANCING — "
+                                 "drop any earlier thread instantly; only short in-the-moment reactions)",
+                        "goodbye": "(RIGHT NOW: the song just ended — it is goodbye time; "
+                                   "no game talk, wrap warmly)",
+                        "recognition": "(RIGHT NOW: back at the welcome screen)",
+                    }.get(new_phase)
+                    if _now_note:
+                        _model.push_context(_now_note)
                 # PHASE 3: entering the song → fresh per-song voice gate (the router).
                 # Kill-switch NOVA_P3=0 falls back to the July reaction path.
                 if new_phase == "dance" and os.getenv("NOVA_P3", "1") == "1":
