@@ -2056,6 +2056,12 @@ async def _end_game(session: AgentSession, state: NovaSessionState,
     state._game_ended = True
     state.game_done.set()
     state.ctx.phase = "goodbye"
+    # THE ENDING owns the goodbye (2026-07-06 live: a SECOND long adult goodbye —
+    # with the PREVIOUS kid's name from memory — spoke after the real 4-beat close).
+    # If the scripted ending already ran, this legacy exit line stays silent.
+    if getattr(state, "_goodbye_ran", False):
+        logger.info("[END] scripted ending already spoke — legacy exit line skipped")
+        return
     name = state.ctx.name or "friend"
     did = f' That {last_move} was COOL.' if last_move else ""
     instr = (
