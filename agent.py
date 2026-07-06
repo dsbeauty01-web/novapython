@@ -953,7 +953,7 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
         if not state._challenge_done.is_set():
             await _nova_say(session, mv["filler"])
             try:
-                await asyncio.wait_for(state._challenge_done.wait(), timeout=5.5)
+                await asyncio.wait_for(state._challenge_done.wait(), timeout=4.0)
             except asyncio.TimeoutError:
                 pass
         if state.ctx.phase not in ("intro", "recognition"):
@@ -1949,7 +1949,7 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
     # (transcription hook). If they never say yes (shy/silent), start it anyway
     # 18s after the name beat — the challenge is the heart of the intro. ──
     async def _challenge_fallback():
-        await asyncio.sleep(18.0)
+        await asyncio.sleep(8.0)
         if not getattr(state, "_challenge_ran", False) and not state.game_done.is_set():
             logger.info("[CHALLENGE] fallback start (no 'yes' heard after the name beat)")
             await _run_intro_challenge(session, state, room)
@@ -1967,12 +1967,12 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
     # dance HERSELF. The old 30s+90s wait meant a kid who said "no", chattered, or
     # went quiet NEVER danced (it ended in a goodbye). A "no" or silence now gets a
     # warm leading line and the picker opens anyway — the dance is the product.
-    accepted = await _wait_for_signal(state, "yes", timeout=12.0)
+    accepted = await _wait_for_signal(state, "yes", timeout=8.0)
     if state.game_done.is_set():
         await _end_game(session, state, agent, None)
         return
     if not accepted and state.ctx.phase in ("intro", "recognition"):
-        logger.info("[nova] no clear YES in 12s → SHE LEADS: picker opens anyway")
+        logger.info("[nova] no clear YES in 8s → SHE LEADS: picker opens anyway")
         await _nova_say(session, "come — I'll show you! let's pick a game together!")
 
     # ── THEY SAID YES → open the game picker and step back. ──
