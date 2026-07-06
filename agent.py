@@ -937,7 +937,10 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
             return
         state._challenge_active = mv["action"]
         state._challenge_done = asyncio.Event()
-        # 1) LIGHT first — locked to the exact joint (browser arms detection for this move only)
+        # 1) VOICE FIRST (2026-07-06 live: kid was already moving → detector confirmed
+        # BEFORE she even asked → "WOW" with no question = conversation broken).
+        # She asks; the light + detection arm only once the ask has been SPOKEN.
+        await _nova_say(session, mv["cue"])
         try:
             await room.local_participant.publish_data(
                 json.dumps({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]}).encode("utf-8"),
@@ -945,9 +948,7 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
         except Exception as e:
             logger.warning(f"[CHALLENGE] cue publish failed: {e}")
         state._last_cue_part = (mv["action"], time.time())   # keep _scan_nova_line dedupe in sync
-        logger.info(f"[CHALLENGE] cue → {mv['action']} (light locked on {mv['joint']})")
-        # 2) VOICE — the pre-made cue line, spoken the same beat
-        await _nova_say(session, mv["cue"])
+        logger.info(f"[CHALLENGE] ask spoken → light + detection armed on {mv['joint']}")
         # 3) wait; neutral filler at ~4.5s (she does NOT know yet — never claims success)
         try:
             await asyncio.wait_for(state._challenge_done.wait(), timeout=4.5)
