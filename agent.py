@@ -983,7 +983,7 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
 # at (t_land - LEAD) so the EVI TTS lands ON the beat. Hard rules:
 # one line per 2.5s (priority-drop), zero voice inside silence windows.
 # ════════════════════════════════════════════════════════════════════
-_TALK_LEAD = float(os.getenv("NOVA_TALK_LEAD_SEC", "1.0"))
+_TALK_LEAD = float(os.getenv("NOVA_TALK_LEAD_SEC", "2.2"))   # measured: warm EVI delivery 2.2-3.4s
 _TALK_CAP_SEC = 2.5
 
 
@@ -996,11 +996,11 @@ async def _talk_say_async(session: AgentSession, state: NovaSessionState, line: 
     """Non-blocking speech for the score: _nova_say awaits the WHOLE EVI generation
     (25s stalls seen live 08:30) — the scheduler must never wait on it, or beats slip.
     _say_inflight keeps lines from piling into EVI."""
-    state._say_inflight = True
+    state._say_inflight = time.time()   # timestamp, not bool: cold gens ran 25s and froze 5 beats
     try:
         await _nova_say(session, line)
     finally:
-        state._say_inflight = False
+        state._say_inflight = None
         state._last_nova_at = time.time()
         logger.info(f"[{tag}] line delivered → '{line}'")
 
@@ -1036,7 +1036,10 @@ async def _run_talk_score(session: AgentSession, state: NovaSessionState, song_i
             if personality.talk_in_silence(song_id, t_land) and personality.talk_in_silence(song_id, now_sec):
                 logger.info(f"[TALK-SCORE] beat {t_land}s inside a silence window — dropped")
                 continue
-            if getattr(state, "_say_inflight", False):
+            _fly = getattr(state, "_say_inflight", None)
+            if _fly and time.time() - _fly < 6.0:
+                # genuinely mid-flight → priority-drop. >6s = EVI cold-gen stall (25s seen
+                # live, froze 5 beats): queue the next beat anyway — EVI plays in order.
                 logger.info(f"[TALK-SCORE] beat {t_land}s dropped (a line is still speaking)")
                 continue
             if time.time() - getattr(state, "_last_nova_at", 0) < cap:
@@ -1067,7 +1070,8 @@ async def _talk_echo(session: AgentSession, state: NovaSessionState, ev_name: st
         every = int(pol.get("fade_every", every))   # teacher fades as competence grows
     if state._echo_n % every:
         return
-    if getattr(state, "_say_inflight", False):
+    _fly = getattr(state, "_say_inflight", None)
+    if _fly and time.time() - _fly < 6.0:
         return
     if time.time() - getattr(state, "_last_nova_at", 0) < _TALK_CAP_SEC:
         return
