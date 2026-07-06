@@ -958,7 +958,10 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
             state._challenge_active = None
             return
         if not state._challenge_done.is_set():
-            await _nova_say(session, mv["filler"])
+            # NEVER TALK TO THE AIR: a kid who has given ZERO input (no voice, no
+            # typing) gets the cue + the light and then QUIET — no filler at nobody.
+            if getattr(state, "_last_kid_at", 0) or getattr(state, "last_kid_text", None):
+                await _nova_say(session, mv["filler"])
             try:
                 await asyncio.wait_for(state._challenge_done.wait(), timeout=4.0)
             except asyncio.TimeoutError:
@@ -1399,7 +1402,7 @@ async def _silence_driver(state: NovaSessionState, session: AgentSession):
     Timestamps: state._last_nova_at / _last_kid_at are set by the speak/hear hooks."""
     nudges = 0
     logger.info(f"[SILENCE-DRIVER] armed (phase={state.ctx.phase}, active={state.active})")
-    while state.active and nudges < 5:
+    while state.active and nudges < 2:   # 2 attempts into silence MAX — then she waits quietly
         await asyncio.sleep(2.0)
         try:
             if state.ctx.phase not in ("intro", "recognition"):
