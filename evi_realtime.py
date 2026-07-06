@@ -228,6 +228,21 @@ class HumeEVIRealtimeModel(RealtimeModel):
         logger.info(f"[REVEAL] fire_greeting → sent={fired}{' (retry)' if retry else ''}")
         return fired
 
+    def push_context(self, text: str) -> bool:
+        """CONTEXT SYNC (2026-07-06): clip lines play in the BROWSER and never enter
+        EVI's chat — her brain didn't know what 'she' just said, so replies felt
+        disconnected ('she doesn't listen'). Hume session_settings.context injects
+        text into her awareness WITHOUT speaking it. Temporary = rides the next turn."""
+        ok = False
+        for sess in list(self._sessions):
+            try:
+                sess._send({"type": "session_settings",
+                            "context": {"text": text, "type": "temporary"}})
+                ok = True
+            except Exception:
+                logger.exception("push_context: send failed")
+        return ok
+
     def session(self) -> "HumeEVIRealtimeSession":
         sess = HumeEVIRealtimeSession(self)
         self._sessions.add(sess)

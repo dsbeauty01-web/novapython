@@ -879,6 +879,14 @@ async def _nova_say(session: AgentSession, line: str):
             await st.room.local_participant.publish_data(
                 json.dumps({"kind": "play-clip", "id": cid}).encode("utf-8"), reliable=True)
             st._last_nova_at = time.time()
+            # CONTEXT SYNC: her brain must know what her mouth just said (clips bypass
+            # EVI) — otherwise the kid replies to a question she "never asked".
+            recent = getattr(st, "_clip_recent", None) or []
+            recent.append(line.strip()); st._clip_recent = recent[-3:]
+            model = getattr(st, "_evi_model", None)
+            if model is not None and hasattr(model, "push_context"):
+                ctx_txt = "You just said out loud (the game system spoke these for you): " +                           " | ".join(f'"{x}"' for x in st._clip_recent)
+                model.push_context(ctx_txt)
             logger.info(f"[CLIP] ▶ {cid}  ('{line[:50]}')")
             return True
         except Exception as e:
