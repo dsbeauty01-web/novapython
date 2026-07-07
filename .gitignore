@@ -1,1 +1,5 @@
 .claude/settings.local.json
+__pycache__/
+*.pyc
+dance-project/
+node_modules/
