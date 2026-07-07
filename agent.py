@@ -1109,6 +1109,17 @@ class TurnEngine:
         except Exception:
             r = None
         if r is None:
+            # SIDE-CAPTURE: a name given in the wrong beat is still their name —
+            # capture silently (context only), the beat continues undisturbed.
+            if kind in ("typed", "stt") and not self.state.ctx.name:
+                _nm = _extract_name(str(val))
+                if _nm:
+                    self.state.ctx.name = _nm
+                    try:
+                        memory.store.update(self.state.kid_id, name=_nm)
+                    except Exception:
+                        pass
+                    logger.info(f"[TURN] side-captured name '{_nm}' (beat '{self.beat_name}' continues)")
             logger.info(f"[TURN] input '{kind}':'{str(val)[:30]}' does not resolve beat '{self.beat_name}'")
             return False
         self._result = (kind, r)
