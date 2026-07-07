@@ -685,11 +685,10 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 # only fires in "dance", so the intro needs its own hook).
                 if event.get("event") == "try_move" and state.ctx.phase in ("recognition", "intro", "play"):
                     _act = (event.get("action") or "").lower()
-                    if getattr(state, "_challenge_active", None):
-                        # scripted challenge owns the reaction — just confirm the move
-                        if _act == state._challenge_active and getattr(state, "_challenge_done", None):
-                            state._challenge_done.set()
-                    else:
+                    _eng = getattr(state, "_turn_engine", None)
+                    if _eng is not None and _eng.offer("detection", _act):
+                        pass   # the beat speaks the WOW
+                    elif not getattr(state, "_challenge_active", None) and not getattr(state, "_turn_engine", None):
                         asyncio.create_task(
                             _react_to_intro_move(session, state, agent, event.get("action")))
 
@@ -1051,6 +1050,207 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
     state._dance_invited = True
     await _nova_say(session, _CHALLENGE_CLOSE_WIN if hit else _CHALLENGE_CLOSE_MISS)
     logger.info(f"[CHALLENGE] done (hit={hit}) → dance invite out")
+
+
+# ════════════════════════════════════════════════════════════════════
+# TURN ENGINE (FIX-TURN-OWNER 2026-07-07) — THE one conversation owner.
+# BEAT = ask → (clip plays to its END; _nova_say holds the real duration)
+#        → listen window opens → inputs resolve against THIS beat only
+#        → resolve → advance. One beat at a time. She never performs an
+# action she just offered — timeouts lead, answers resolve.
+# ════════════════════════════════════════════════════════════════════
+class TurnEngine:
+    def __init__(self, session, state, room):
+        self.session, self.state, self.room = session, state, room
+        self.beat_seq = 0
+        self.beat_name = None
+        self.listening = False
+        self._matcher = None
+        self._result = None
+        self._got = asyncio.Event()
+
+    def new_beat(self, name):
+        self.beat_seq += 1
+        self.beat_name = name
+        self.listening = False
+        self.state._current_beat = self.beat_seq
+        logger.info(f"[TURN] beat #{self.beat_seq} '{name}'")
+        return self.beat_seq
+
+    async def cancel_stale(self):
+        """State advanced — no clip from a dead beat may reach the speaker."""
+        try:
+            await self.room.local_participant.publish_data(
+                json.dumps({"kind": "cancel-beat", "beat": self.beat_seq - 1}).encode("utf-8"),
+                reliable=True)
+        except Exception:
+            pass
+
+    async def ask(self, line):
+        """Speak the beat's ask. _nova_say holds for the clip's REAL duration
+        (or the full EVI generation) — when this returns, the ask has been heard."""
+        await _nova_say(self.session, line)
+
+    def offer(self, kind, val):
+        """ALL inputs enter here (typed / stt / detection / button).
+        Resolved against the CURRENT beat only. Returns True if consumed."""
+        if not self.listening or self._matcher is None:
+            logger.info(f"[TURN] input '{kind}' outside listen window (beat={self.beat_name}) → conversation only")
+            return False
+        try:
+            r = self._matcher(kind, val)
+        except Exception:
+            r = None
+        if r is None:
+            logger.info(f"[TURN] input '{kind}':'{str(val)[:30]}' does not resolve beat '{self.beat_name}'")
+            return False
+        self._result = (kind, r)
+        self.listening = False
+        self._got.set()
+        logger.info(f"[TURN] beat '{self.beat_name}' RESOLVED by {kind}: {str(r)[:40]}")
+        return True
+
+    async def listen(self, matcher, timeout):
+        """Open the listen window — inputs accepted only NOW (spec §2)."""
+        self._matcher = matcher
+        self._result = None
+        self._got = asyncio.Event()
+        self.listening = True
+        logger.info(f"[TURN] listening ({self.beat_name}, {timeout}s window)")
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if self.state.game_done.is_set() or not self.state.active:
+                break
+            if self.state.ctx.phase not in ("intro", "recognition"):
+                logger.info(f"[TURN] phase left intro during '{self.beat_name}' → external resolution")
+                self.listening = False
+                return ("external", "phase")
+            try:
+                await asyncio.wait_for(self._got.wait(), timeout=0.25)
+                break
+            except asyncio.TimeoutError:
+                continue
+        self.listening = False
+        self._matcher = None
+        if self._result is not None:
+            return self._result
+        logger.info(f"[TURN] beat '{self.beat_name}' timed out ({timeout}s) → timeout action")
+        return (None, None)
+
+
+def _turn_wants_start(t):
+    return _wants_to_start(str(t))
+
+
+async def run_intro_turns(session: AgentSession, state: NovaSessionState,
+                          agent: "NovaAgent", room: rtc.Room):
+    """The intro as BEATS (FIX-TURN-OWNER). Replaces the old scattered flow."""
+    eng = TurnEngine(session, state, room)
+    state._turn_engine = eng
+
+    # ── BEAT: greet — the reveal handler plays the ask (clip for new kids, EVI for
+    # returning); we wait until it has been HEARD, then open listening.
+    eng.new_beat("greet")
+    _t0 = time.time()
+    while getattr(state, "_last_nova_at", 0) == 0 and time.time() - _t0 < 45.0             and state.active and not state.game_done.is_set():
+        await asyncio.sleep(0.3)
+    await asyncio.sleep(0.4)
+
+    # ── BEAT: name ──
+    def m_name(kind, val):
+        if kind in ("typed", "stt"):
+            nm = _extract_name(str(val))
+            return nm if nm else None
+        return None
+    name = None
+    kind = None
+    if not state.ctx.name:
+        kind, r = await eng.listen(m_name, 14.0)
+        if kind in ("typed", "stt"):
+            name = r
+        elif kind is None:
+            eng.new_beat("name_retry")
+            await eng.cancel_stale()
+            await eng.ask("what's your name, friend?")
+            kind, r = await eng.listen(m_name, 9.0)
+            if kind in ("typed", "stt"):
+                name = r
+        if name:
+            state.ctx.name = name
+            try:
+                memory.store.update(state.kid_id, name=name)
+            except Exception:
+                pass
+            logger.info(f"[TURN] name captured: {name}")
+            if kind == "typed":   # voice path: EVI already replied naturally
+                await eng.ask(f"{name}! hi {name} — love it!")
+    else:
+        name = state.ctx.name
+
+    # ── BEAT: move invite ──
+    eng.new_beat("move_invite")
+    await eng.cancel_stale()
+    await eng.ask("ready to make a move?")
+    def m_yes(kind2, val2):
+        if kind2 in ("typed", "stt") and _turn_wants_start(val2):
+            return "yes"
+        return None
+    await eng.listen(m_yes, 8.0)   # yes → straight in; timeout → she leads anyway
+
+    # ── BEATS: the movement challenge (ask ENDS → light + detection arm → listen) ──
+    hit = False
+    state._challenge_ran = True   # legacy paths stay quiet
+    for mv in INTRO_CHALLENGE:
+        if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
+            break
+        eng.new_beat("challenge_" + mv["action"])
+        await eng.cancel_stale()
+        state._challenge_active = mv["action"]
+        await eng.ask(mv["cue"])
+        try:   # arm at ask END (spec §4) — a WOW can never fire mid-ask
+            await room.local_participant.publish_data(
+                json.dumps({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]}).encode("utf-8"),
+                reliable=True)
+            state._last_cue_part = (mv["action"], time.time())
+            logger.info(f"[TURN] ask ended → light + detection ARMED on {mv['joint']}")
+        except Exception:
+            pass
+        want = mv["action"]
+        def m_move(kind3, val3, _want=want):
+            return "hit" if (kind3 == "detection" and str(val3).lower() == _want) else None
+        _k, r3 = await eng.listen(m_move, 6.0)
+        if r3 != "hit":
+            await eng.ask(mv["filler"])
+            _k, r3 = await eng.listen(m_move, 5.0)
+        state._challenge_active = None
+        if r3 == "hit":
+            await eng.ask(mv["wow"])
+            hit = True
+            break
+    seen = getattr(state, "_intro_moves_reacted", None) or set()
+    seen.add("scripted")
+    state._intro_moves_reacted = seen
+
+    # ── BEAT: play invite — she offers, then GENUINELY WAITS (never ask-and-do) ──
+    if state.ctx.phase in ("intro", "recognition") and not state.game_done.is_set():
+        eng.new_beat("play_invite")
+        await eng.cancel_stale()
+        state._dance_invited = True
+        await eng.ask(_CHALLENGE_CLOSE_WIN if hit else _CHALLENGE_CLOSE_MISS)
+        kind4, _r4 = await eng.listen(m_yes, 8.0)
+        if state.ctx.phase in ("intro", "recognition") and not state.game_done.is_set():
+            if kind4 is None:
+                eng.new_beat("her_lead")
+                await eng.cancel_stale()
+                await eng.ask("come — I'll show you! let's pick a game together!")
+            try:
+                await room.local_participant.publish_data(
+                    json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True)
+                logger.info("[TURN] picker opened (" + ("her lead after silence" if kind4 is None else "kid resolved") + ")")
+            except Exception as e:
+                logger.warning(f"[TURN] go-picker failed: {e}")
+    state._turn_engine_done = True
+    logger.info("[TURN] intro turns complete — engine idles; game phases are packet-driven")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1469,6 +1669,9 @@ async def _silence_driver(state: NovaSessionState, session: AgentSession):
     rule (retry once → fallback → ADVANCE). Max 5 nudges; stops when the phase moves on.
     Timestamps: state._last_nova_at / _last_kid_at are set by the speak/hear hooks."""
     nudges = 0
+    if getattr(state, "_turn_engine", None) is not None:
+        logger.info("[SILENCE-DRIVER] turn engine owns the intro — driver stands down")
+        return
     logger.info(f"[SILENCE-DRIVER] armed (phase={state.ctx.phase}, active={state.active})")
     while state.active and nudges < 2:   # 2 attempts into silence MAX — then she waits quietly
         await asyncio.sleep(2.0)
@@ -1553,10 +1756,9 @@ def _scan_nova_line(state: NovaSessionState, txt: str):
         if not room:
             return
         if _NOVA_GO.search(txt or ""):
-            state._dance_invited = True   # a kid "yes" from here on means START THE GAME
-            logger.info(f"[GAME-PUSH] Nova called the dance herself: '{txt[:50]}'")
-            asyncio.create_task(room.local_participant.publish_data(
-                json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True))
+            # TURN-OWNER §2: she NEVER performs the action she just offered — the
+            # engine opens the picker on the kid's answer or its own timeout lead.
+            state._dance_invited = True
             return
         for pat, part in _NOVA_PART:
             if pat.search(txt or ""):
@@ -1590,58 +1792,16 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
         await _handle_dance_mic_text(session, state, agent, text)
         return
 
-    # ── TYPED TEXT IS FIRST-CLASS INPUT (2026-07-06) ─────────────────
-    # The chat box was dead for months; now that it works, typed text must drive
-    # the SAME machinery as voice: name capture, yes/done signals, the challenge,
-    # the name-wait. (Live: typed "im ready" was ignored → sparkle-line loop.)
-    if state.ctx.phase in ("intro", "recognition"):
-        if (not state.ctx.name or _is_explicit_name(text)):
-            nm = _extract_name(text)
-            if nm and nm != state.ctx.name:
-                state.ctx.name = nm
-                try:
-                    memory.store.update(state.kid_id, name=nm)
-                except Exception:
-                    pass
-                logger.info(f"[nova] captured name (typed): {nm}")
-                # DETERMINISTIC ACK (2026-07-06 live "bobo"): mid-challenge her free
-                # reply gets drowned by script lines — the kid MUST hear their name
-                # land. One scripted ack cuts through, guaranteed.
-                asyncio.create_task(_talk_say_async(
-                    session, state, f"{nm}! hi {nm} — love it!", "NAME-ACK"))
-                # SINGLE VOICE (live "shoso" 11:28): ALSO sending the raw text as a
-                # user turn made EVI garble the two injections and RECITE ITS OWN
-                # PROMPT out loud. The ack IS the reply (and puts the name in her
-                # context); skip the chatbot turn for this message entirely.
-                return
+    # ── TURN-OWNER: typed inputs go to the ONE engine, resolved against the
+    # current beat only. Consumed → the beat speaks the resolution and we stop.
+    # Not consumed → this is real conversation; EVI replies below.
+    _eng = getattr(state, "_turn_engine", None)
+    if _eng is not None and _eng.offer("typed", text):
         try:
-            state.kid_spoke.set()          # the name-wait listens for this
+            memory.store.add_message(state.kid_id, "user", text)
         except Exception:
             pass
-
-    # ── SHE'S A COACH, NOT A CHATBOT ─────────────────────────────────
-    # 1. Kid says start/dance/play/go/ready → challenge first (if not run), else picker.
-    # 2. Chit-chat cap: after 4 exchanges in the intro, she pushes to the game herself.
-    # (phase gate was "recognition"-only — live phase is "intro"; 3rd hit of this bug class)
-    if state.ctx.phase in ("intro", "recognition"):
-        if _wants_to_start(text):
-            if not getattr(state, "_challenge_ran", False):
-                logger.info(f"[CHALLENGE] typed start intent '{text[:40]}' → scripted challenge first")
-                _rm = getattr(state, "room", None)
-                if _rm is not None:
-                    asyncio.create_task(_run_intro_challenge(session, state, _rm))
-                return
-            logger.info(f"[GAME-PUSH] typed start intent '{text[:40]}' → picker")
-            state.last_kid_signal = "yes"   # the yes-wait in _run_nova fires the picker
-            asyncio.create_task(_push_to_game(state, session, "YESSS — let's dance! pick your game!"))
-            return                       # no chatbot reply on top of the push
-        state._chat_turns = getattr(state, "_chat_turns", 0) + 1
-        if state._chat_turns >= 4:
-            logger.info("[GAME-PUSH] chat cap reached → pushing to the game")
-            state.last_kid_signal = "yes"
-            asyncio.create_task(_push_to_game(
-                state, session, "okay okay — enough talking, time to MOVE! pick a game!"))
-            return
+        return
 
     # Persistent message history — survives across sessions if Postgres on
     try:
@@ -2033,82 +2193,12 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
         await _end_game(session, state, agent, state.ctx.observed_visual)
         return
 
-    # ── ANCHOR TO HER VOICE (2026-07-06 "john"): EVI cold-gen delays her greet
-    # 15-40s while the intro timers ran on WALL CLOCK — the challenge fired 2s
-    # after "what's your name?" and steamrolled the kid. Nothing below starts
-    # counting until she has ACTUALLY spoken once. ──
-    _anchor0 = time.time()
-    while (getattr(state, "_last_nova_at", 0) == 0 and time.time() - _anchor0 < 45.0
-           and state.active and not state.game_done.is_set()):
-        await asyncio.sleep(0.3)
+    # ── TURN ENGINE (FIX-TURN-OWNER 2026-07-07): the ONE conversation owner.
+    # greet → name → move-invite → challenge (arm at ask END) → play-invite →
+    # picker. Every beat: ask → heard → listen → resolve/timeout → advance.
+    await run_intro_turns(session, state, agent, room)
 
-    # ── INTRO: capture the name from the first utterance. The brain (intro
-    # persona) echoes it warmly AND invites them to play — one voice. ──
-    if not state.ctx.name:
-        state.kid_spoke.clear()
-        try:
-            await asyncio.wait_for(state.kid_spoke.wait(), timeout=20.0)
-        except asyncio.TimeoutError:
-            pass
-        nm = _extract_name(state.last_kid_text)
-        if nm:
-            state.ctx.name = nm
-            try:
-                memory.store.update(state.kid_id, name=nm)
-            except Exception:
-                pass
-            logger.info(f"[nova] captured name: {nm}")
-            await agent.refresh_instructions()
-            # push the captured name to the browser so it persists (returning-kid path)
-            try:
-                await room.local_participant.publish_data(
-                    json.dumps({"kind": "name", "name": nm}).encode("utf-8"), reliable=True)
-            except Exception:
-                pass
-
-    # ── SCRIPTED CHALLENGE FALLBACK: normally the kid's first 'yes' starts it
-    # (transcription hook). If they never say yes (shy/silent), start it anyway
-    # 18s after the name beat — the challenge is the heart of the intro. ──
-    async def _challenge_fallback():
-        await asyncio.sleep(8.0)
-        if not getattr(state, "_challenge_ran", False) and not state.game_done.is_set():
-            logger.info("[CHALLENGE] fallback start (no 'yes' heard after the name beat)")
-            await _run_intro_challenge(session, state, room)
-    asyncio.create_task(_challenge_fallback())
-
-    # ── the challenge is the heart of the intro: wait for it to run + finish
-    # (started by the kid's first yes or the 18s fallback), capped so nothing wedges.
-    _cw0 = time.time()
-    while ((not getattr(state, "_challenge_ran", False) or getattr(state, "_challenge_active", None))
-           and time.time() - _cw0 < 75.0 and state.active and not state.game_done.is_set()
-           and state.ctx.phase in ("intro", "recognition")):
-        await asyncio.sleep(0.5)
-
-    # ── SHE LEADS (2026-07-06): wait briefly for a 'yes' — then take them to the
-    # dance HERSELF. The old 30s+90s wait meant a kid who said "no", chattered, or
-    # went quiet NEVER danced (it ended in a goodbye). A "no" or silence now gets a
-    # warm leading line and the picker opens anyway — the dance is the product.
-    accepted = await _wait_for_signal(state, "yes", timeout=8.0)
-    if state.game_done.is_set():
-        await _end_game(session, state, agent, None)
-        return
-    if not accepted and state.ctx.phase in ("intro", "recognition"):
-        logger.info("[nova] no clear YES in 8s → SHE LEADS: picker opens anyway")
-        await _nova_say(session, "come — I'll show you! let's pick a game together!")
-
-    # ── THEY SAID YES → open the game picker and step back. ──
-    # 2026-07-06 live: the legacy PLAY moves-host loop (7s vision polling + beat
-    # heartbeat) hijacked the flow after the challenge — "ready to make a move?"
-    # loops, kid speech drowned, vision spam. nova-joined's game phase is browser-
-    # driven end to end; the worker rides along on packets (talk score, ending).
-    # Vision stays: the ONE pre-reveal snapshot — no polling.
-    if state.ctx.phase in ("intro", "recognition"):   # kid may have pressed the button already
-        logger.info("[nova] intro complete → opening the game picker (host loop removed)")
-        try:
-            await room.local_participant.publish_data(
-                json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True)
-        except Exception as e:
-            logger.warning(f"[nova] go-picker publish failed: {e}")
+    # engine idles; the game/goodbye phases are packet-driven from here
     while state.active and not state.game_done.is_set():
         await asyncio.sleep(1.0)
 
@@ -2453,21 +2543,15 @@ async def entrypoint(ctx: JobContext):
                         except Exception:
                             pass
                         logger.info(f"[nova] captured name (hook): {nm}")
+                # TURN-OWNER: voice inputs go to the engine (resolved against the
+                # current beat only). EVI replies to voice naturally either way.
+                _eng = getattr(state, "_turn_engine", None)
+                if _eng is not None:
+                    _eng.offer("stt", text)
                 sig = personality.detect_signal(text)
-                # ORDER FIX (2026-07-04 live): "I'm ready to make a move" answered HER
-                # "ready to make a move?" but the 'yes' signal advanced the worker to the
-                # play phase and she jumped to "let's DANCE!" — the challenge was skipped.
-                # A 'yes' during the intro only counts AFTER the movement challenge
-                # happened (a real move reacted) or after she invited the dance herself.
                 if (sig == "yes" and state.ctx.phase in ("intro", "recognition")
-                        and not getattr(state, "_intro_moves_reacted", None)
-                        and not getattr(state, "_dance_invited", False)):
-                    logger.info("[game] 'yes' before the movement challenge → starting the SCRIPTED challenge")
-                    sig = None
-                    if not getattr(state, "_challenge_ran", False):
-                        _rm = getattr(state, "room", None)
-                        if _rm is not None:
-                            asyncio.create_task(_run_intro_challenge(session, state, _rm))
+                        and not getattr(state, "_turn_engine_done", False)):
+                    sig = None   # the engine owns intro yes-handling
                 if sig:
                     state.last_kid_signal = sig
                     if sig == "done":
