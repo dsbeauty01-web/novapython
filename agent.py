@@ -1289,6 +1289,13 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
 # at (t_land - LEAD) so the EVI TTS lands ON the beat. Hard rules:
 # one line per 2.5s (priority-drop), zero voice inside silence windows.
 # ════════════════════════════════════════════════════════════════════
+# ── NOVA V2V (NOVA-V2V-STRUCTURE.md, stage 0): the master flag. =1 switches the
+# new closed-voice-loop path stage by stage; =0 (default) is today's build,
+# untouched. Every V2V change MUST hide behind this flag until V2V-GOLD.
+def _v2v_on() -> bool:
+    return os.getenv("NOVA_V2V", "0") == "1"
+
+
 _TALK_LEAD = float(os.getenv("NOVA_TALK_LEAD_SEC", "2.2"))   # measured: warm EVI delivery 2.2-3.4s
 _TALK_CAP_SEC = 2.5
 
@@ -2820,6 +2827,7 @@ if __name__ == "__main__":
     import threading
     threading.Thread(target=_keepwarm_loop, daemon=True, name="nova-keepwarm").start()
     logger.info("[keepwarm] worker-side web pinger started (240s cadence)")
+    logger.info("[V2V] flag NOVA_V2V=" + ("ON" if _v2v_on() else "OFF (today's build)"))
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
