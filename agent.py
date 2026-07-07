@@ -899,6 +899,8 @@ async def _nova_say(session: AgentSession, line: str):
             if model is not None and hasattr(model, "push_context"):
                 ctx_txt = "You just said out loud (the game system spoke these for you): " +                           " | ".join(f'"{x}"' for x in st._clip_recent)
                 model.push_context(ctx_txt)
+            st._order_n = getattr(st, "_order_n", 0) + 1
+            logger.info(f"[ORDER] #{st._order_n} clip {cid}")
             logger.info(f"[CLIP] ▶ {cid} ({cdur}s)  ('{line[:50]}')")
             # HER MOUTH IS BUSY for the clip's real duration (2026-07-07: clips return
             # instantly, so the challenge armed mid-ask, acks overlapped the greeting,
@@ -914,6 +916,10 @@ async def _nova_say(session: AgentSession, line: str):
             await session.generate_reply(instructions=line)
         else:
             await session.say(line)
+        st2 = getattr(session, "_nova_state", None)
+        if st2 is not None:
+            st2._order_n = getattr(st2, "_order_n", 0) + 1
+            logger.info(f"[ORDER] #{st2._order_n} directed-line (EVI)")
         logger.info(f"[SAY] '{line[:60]}'")
         return True
     except Exception as e:
@@ -1856,6 +1862,8 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
             break
         await asyncio.sleep(0.25)
     _before = getattr(state, "_last_nova_at", 0)
+    state._order_n = getattr(state, "_order_n", 0) + 1
+    logger.info(f"[ORDER] #{state._order_n} directed-reply (typed conversation): '{text[:40]}'")
     logger.info("[BRAIN] generating reply to kid input...")
     try:
         await session.generate_reply(user_input=text)

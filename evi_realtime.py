@@ -342,7 +342,15 @@ class HumeEVIRealtimeSession(
 
     def push_audio(self, frame: rtc.AudioFrame) -> None:
         """Receive an input audio frame from LiveKit, resample to EVI's input
-        format, batch into ~100ms chunks, and forward as base64 audio_input."""
+        format, batch into ~100ms chunks, and forward as base64 audio_input.
+
+        FIX-ONE-VOICE (2026-07-07): by default EVI's EARS ARE CUT — it never hears
+        the room. EVI auto-answered the mic (and possibly her own clips) with its
+        generic autopilot brain = the extra voices. The mic now feeds the browser
+        STT -> turn engine ONLY; EVI speaks solely on directed lines.
+        Re-enable listening (old behavior) with NOVA_EVI_EARS=1."""
+        if os.environ.get("NOVA_EVI_EARS", "0") != "1":
+            return
         if self._closed:
             return
         for f in self._resample_input(frame):
