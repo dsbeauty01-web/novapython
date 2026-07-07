@@ -362,5 +362,13 @@
  "cb_freeze_1": {
   "text": "best statue I ever met!",
   "dur": 3.03
+ },
+ "name_retry": {
+  "text": "what's your name, friend?",
+  "dur": 1.16
+ },
+ "move_invite": {
+  "text": "ready to make a move?",
+  "dur": 1.51
  }
 }

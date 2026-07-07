@@ -1093,9 +1093,16 @@ class TurnEngine:
 
     def offer(self, kind, val):
         """ALL inputs enter here (typed / stt / detection / button).
-        Resolved against the CURRENT beat only. Returns True if consumed."""
+        Resolved against the CURRENT beat only. Returns True if consumed.
+        EAGER ANSWERS (2026-07-07 robot run): a kid who answers WHILE the ask is
+        still playing is eager, not out of turn — buffer it; listen() replays it
+        the moment the window opens."""
         if not self.listening or self._matcher is None:
-            logger.info(f"[TURN] input '{kind}' outside listen window (beat={self.beat_name}) → conversation only")
+            if kind in ("typed", "stt"):
+                self._eager = (kind, val, time.time())
+                logger.info(f"[TURN] eager input '{kind}' buffered (beat={self.beat_name}) — replayed when the window opens")
+            else:
+                logger.info(f"[TURN] input '{kind}' outside listen window (beat={self.beat_name}) → dropped")
             return False
         try:
             r = self._matcher(kind, val)
@@ -1117,6 +1124,11 @@ class TurnEngine:
         self._got = asyncio.Event()
         self.listening = True
         logger.info(f"[TURN] listening ({self.beat_name}, {timeout}s window)")
+        eager = getattr(self, "_eager", None)
+        self._eager = None
+        if eager is not None and time.time() - eager[2] < 10.0:
+            logger.info(f"[TURN] replaying eager {eager[0]} input into '{self.beat_name}'")
+            self.offer(eager[0], eager[1])
         t0 = time.time()
         while time.time() - t0 < timeout:
             if self.state.game_done.is_set() or not self.state.active:
