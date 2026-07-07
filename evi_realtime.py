@@ -349,7 +349,16 @@ class HumeEVIRealtimeSession(
         generic autopilot brain = the extra voices. The mic now feeds the browser
         STT -> turn engine ONLY; EVI speaks solely on directed lines.
         Re-enable listening (old behavior) with NOVA_EVI_EARS=1."""
-        if os.environ.get("NOVA_EVI_EARS", "0") != "1":
+        _v2v = os.environ.get("NOVA_V2V", "0") == "1"
+        if _v2v:
+            # V2V STAGE 1: the ears DOOR — the engine owns it. Open on conversational
+            # phases, closed during songs and whenever the engine shuts it.
+            if not getattr(self._realtime_model, "_ears_open", False):
+                return
+            self._realtime_model._ears_fwd = getattr(self._realtime_model, "_ears_fwd", 0) + 1
+            if self._realtime_model._ears_fwd % 100 == 1:
+                logger.info(f"[EARS] door OPEN — audio flowing to EVI (frames={self._realtime_model._ears_fwd})")
+        elif os.environ.get("NOVA_EVI_EARS", "0") != "1":
             return
         if self._closed:
             return

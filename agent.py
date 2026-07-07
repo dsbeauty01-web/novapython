@@ -376,6 +376,13 @@ class NovaSessionState:
             if new_phase in ("recognition", "dance", "goodbye"):
                 logger.info(f"[state] phase {self.ctx.phase} → {new_phase}")
                 self.ctx.phase = new_phase
+                # V2V STAGES 1+5: the ears door follows the phase — open for
+                # conversation, CLOSED the moment a song plays (she must never
+                # listen to the music), open again for the goodbye.
+                _m = getattr(self, "_evi_model", None)
+                if _m is not None:
+                    _m._ears_open = new_phase in ("recognition", "goodbye")
+                    logger.info(f"[EARS] door {'OPEN' if _m._ears_open else 'CLOSED'} (phase {new_phase})")
                 # REAL-TIME AWARENESS (2026-07-06): her brain learns the phase changed
                 # THE INSTANT it happens — no more finishing old-phase thoughts late.
                 _model = getattr(self, "_evi_model", None)
@@ -626,6 +633,16 @@ class NovaAgent(Agent):
 def register_data_handler(room: rtc.Room, state: NovaSessionState, session: AgentSession, agent: "NovaAgent"):
     """Listen for game events from the browser."""
     state.room = room   # so _push_to_game can send go-picker to the browser
+    if _v2v_on():
+        async def _announce_v2v():
+            await asyncio.sleep(1.0)
+            try:
+                await room.local_participant.publish_data(
+                    json.dumps({"kind": "v2v", "on": True}).encode("utf-8"), reliable=True)
+                logger.info("[V2V] announced to browser — browser-STT conversation path gated OFF")
+            except Exception:
+                pass
+        asyncio.create_task(_announce_v2v())
 
     @room.on("data_received")
     def on_data(packet: rtc.DataPacket):
@@ -1097,6 +1114,34 @@ class TurnEngine:
         (or the full EVI generation) — when this returns, the ask has been heard."""
         await _nova_say(self.session, line)
 
+    async def brief(self, goal, fallback_line):
+        """V2V STAGE 2 — DIRECTOR, NOT VENTRILOQUIST: on conversational beats the
+        engine sends EVI a BEAT BRIEF and lets her genuinely converse inside it.
+        Flag off -> today's verbatim ask."""
+        if not _v2v_on():
+            await self.ask(fallback_line)
+            return
+        model = getattr(self.state, "_evi_model", None)
+        if model is None:
+            await self.ask(fallback_line)
+            return
+        try:
+            model.push_context(f"(BEAT '{self.beat_name}': {goal})")
+        except Exception:
+            pass
+        logger.info(f"[TURN] brief sent for beat '{self.beat_name}': {goal[:60]}")
+        _before = getattr(self.state, "_last_nova_at", 0)
+        try:
+            await self.session.generate_reply(user_input=f"(begin this beat now: {goal})")
+        except Exception as e:
+            logger.warning(f"[TURN] brief generate failed → fallback line: {e}")
+            await self.ask(fallback_line)
+            return
+        # wait until her line lands (cap 12s) so the listen window opens after speech
+        _t0 = time.time()
+        while getattr(self.state, "_last_nova_at", 0) <= _before and time.time() - _t0 < 12.0:
+            await asyncio.sleep(0.25)
+
     def offer(self, kind, val):
         """ALL inputs enter here (typed / stt / detection / button).
         Resolved against the CURRENT beat only. Returns True if consumed.
@@ -1200,7 +1245,8 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
         elif kind is None:
             eng.new_beat("name_retry")
             await eng.cancel_stale()
-            await eng.ask("what's your name, friend?")
+            await eng.brief("gently ask their name ONE more time, one short warm line",
+                            "what's your name, friend?")
             kind, r = await eng.listen(m_name, 9.0)
             if kind in ("typed", "stt"):
                 name = r
@@ -1219,7 +1265,8 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
     # ── BEAT: move invite ──
     eng.new_beat("move_invite")
     await eng.cancel_stale()
-    await eng.ask("ready to make a move?")
+    await eng.brief("invite them to try one little move together — ONE excited line ending "
+                    "with the question 'ready to make a move?'", "ready to make a move?")
     def m_yes(kind2, val2):
         if kind2 in ("typed", "stt") and _turn_wants_start(val2):
             return "yes"
@@ -1271,7 +1318,9 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
             if kind4 is None:
                 eng.new_beat("her_lead")
                 await eng.cancel_stale()
-                await eng.ask("come — I'll show you! let's pick a game together!")
+                await eng.brief("they went quiet — take their hand warmly: one line saying "
+                                "you'll pick a game together",
+                                "come — I'll show you! let's pick a game together!")
             try:
                 await room.local_participant.publish_data(
                     json.dumps({"kind": "go-picker"}).encode("utf-8"), reliable=True)
@@ -2513,6 +2562,9 @@ async def entrypoint(ctx: JobContext):
             except Exception as pe:
                 logger.exception(f"[nova-evi] prompt build FAILED → using Hume config prompt: {pe}")
             _evi_model = HumeEVIRealtimeModel(system_prompt=evi_prompt)   # keys/config from env
+            _evi_model._ears_open = _v2v_on()   # V2V: door open for the intro conversation
+            if _v2v_on():
+                logger.info("[EARS] door OPEN (session start, intro)")
             state._evi_model = _evi_model   # reveal-now handler fires the greeting through this
             if direct_game:
                 # game link: one excited hello, no name question — the game starts in seconds
