@@ -865,12 +865,12 @@ def _evi_on() -> bool:
 # the clip index — hit = the browser plays it in MILLISECONDS (play-clip packet);
 # miss (dynamic text) = the EVI live path as before. One change point, every
 # scripted call site upgraded at once. Kill-switch: NOVA_CLIPS=0.
-_CLIP_INDEX: dict = {}
+_CLIP_INDEX: dict = {}   # exact text -> (clip id, duration seconds)
 try:
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "clips-manifest.json"),
               encoding="utf-8") as _cf:
-        _CLIP_INDEX = {v.strip(): k for k, v in json.load(_cf).items()}
-    pass
+        _CLIP_INDEX = {v["text"].strip(): (k, float(v.get("dur", 2.5)))
+                       for k, v in json.load(_cf).items()}
 except Exception as _ce:
     _CLIP_INDEX = {}
 if _CLIP_INDEX:
@@ -886,12 +886,12 @@ async def _nova_say(session: AgentSession, line: str):
     if not line:
         return False
     st = getattr(session, "_nova_state", None)
-    cid = _CLIP_INDEX.get(line.strip()) if os.getenv("NOVA_CLIPS", "1") == "1" else None
+    hit = _CLIP_INDEX.get(line.strip()) if os.getenv("NOVA_CLIPS", "1") == "1" else None
+    cid, cdur = (hit if hit else (None, 0.0))
     if cid and st is not None and getattr(st, "room", None) is not None:
         try:
             await st.room.local_participant.publish_data(
                 json.dumps({"kind": "play-clip", "id": cid}).encode("utf-8"), reliable=True)
-            st._last_nova_at = time.time()
             # CONTEXT SYNC: her brain must know what her mouth just said (clips bypass
             # EVI) — otherwise the kid replies to a question she "never asked".
             recent = getattr(st, "_clip_recent", None) or []
@@ -900,7 +900,13 @@ async def _nova_say(session: AgentSession, line: str):
             if model is not None and hasattr(model, "push_context"):
                 ctx_txt = "You just said out loud (the game system spoke these for you): " +                           " | ".join(f'"{x}"' for x in st._clip_recent)
                 model.push_context(ctx_txt)
-            logger.info(f"[CLIP] ▶ {cid}  ('{line[:50]}')")
+            logger.info(f"[CLIP] ▶ {cid} ({cdur}s)  ('{line[:50]}')")
+            # HER MOUTH IS BUSY for the clip's real duration (2026-07-07: clips return
+            # instantly, so the challenge armed mid-ask, acks overlapped the greeting,
+            # transitions rushed). Holding here restores natural pacing everywhere:
+            # ask-first arming, goodbye beats, input windows.
+            await asyncio.sleep(cdur + 0.25)
+            st._last_nova_at = time.time()
             return True
         except Exception as e:
             logger.warning(f"[CLIP] publish failed → EVI fallback: {e}")

@@ -1,93 +1,366 @@
 {
- "greet": "hi! I'm Nova — your magic friend! …what's your name?",
- "lead_picker": "come — I'll show you! let's pick a game together!",
- "ack_generic": "ooh!",
- "ch_shoulder_cue": "okay… see that sparkle? can you nudge that RIGHT shoulder?",
- "ch_shoulder_filler": "let's see it… give that shoulder a little push!",
- "ch_shoulder_wow": "WOW — that RIGHT shoulder! that was a GOOD one!",
- "ch_left_cue": "let's try another one — raise your LEFT hand, way UP high!",
- "ch_left_filler": "go on… that LEFT hand, up to the sky!",
- "ch_left_wow": "WOW — that LEFT hand shot UP! amazing!",
- "ch_close_win": "ready to dance? push the big button — or say 'let's start'!",
- "ch_close_miss": "I LOVE that energy! ready to dance? push the big button!",
- "score_hello_0": "copy the song — I'm with you!",
- "score_hello_1": "on your HEAD — hehe!",
- "score_hello_2": "ooh — MY verse! listen close!",
- "score_hello_3": "fast fast fast — GO!",
- "score_hello_6": "you did the WHOLE song!",
- "score_wave_0": "shoulders… ROLL!",
- "score_wave_1": "again — roll!",
- "score_wave_2": "now ELBOWS — pump!",
- "score_wave_3": "other one!",
- "score_wave_4": "wrists — wave it!",
- "score_wave_5": "wave wave!",
- "score_wave_6": "let the light ride up your arm!",
- "score_wave_9": "THAT was a wave!",
- "score_joined_0": "find the beat… bounce with me…",
- "score_joined_1": "just your HEAD — left… right…",
- "score_joined_2": "now SHOULDERS!",
- "score_joined_3": "RIBS — slide 'em!",
- "score_joined_4": "this one's tricky — you got it!",
- "score_joined_5": "HIPS! sway it!",
- "score_joined_10": "that was ALL of you — wow!",
- "score_freeze_0": "dance dance dance!",
- "score_freeze_3": "robot arms!",
- "score_freeze_6": "reach for the SKY!",
- "score_freeze_10": "the BIG one… statue… staaatue…",
- "score_freeze_11": "FIVE SECONDS!! you're a champion statue!!",
- "score_freeze_12": "wave byyye!",
- "pool_hit_echo_0": "yes!",
- "pool_hit_echo_1": "there!",
- "pool_hit_echo_2": "that's it!",
- "pool_hit_echo_3": "woo!",
- "pool_clap_along_0": "clap-clap — YES!",
- "pool_clap_along_1": "clap it clap it!",
- "pool_clap_along_2": "hehe — clap!",
- "pool_freeze_whisper_0": "freeeeze… don't move…",
- "pool_freeze_whisper_1": "shhh… so still…",
- "pool_freeze_whisper_2": "statue time…",
- "pool_freeze_burst_0": "a STATUE!! hahaha!",
- "pool_freeze_burst_1": "you didn't MOVE! amazing!",
- "pool_freeze_burst_2": "hahaha PERFECT freeze!",
- "pool_chain_open_0": "watch the light — the WHOLE wave—",
- "pool_chain_open_1": "here it comes — follow it—",
- "pool_freestyle_0": "now YOU — wave it ALL!",
- "pool_freestyle_1": "your wave now — GO!",
- "pool_double_call_0": "DOUBLE TIME!! go go go!",
- "pool_double_call_1": "twice as fast — GO!",
- "pool_combo_joy_0": "EVERYTHING at once!!",
- "pool_combo_joy_1": "don't stop!!",
- "pool_combo_joy_2": "BIGGER!",
- "pool_combo_joy_3": "this is IT!!",
- "pool_fz_whisper_0": "shhh… nobody moves…",
- "pool_fz_whisper_1": "still… still…",
- "pool_fz_whisper_2": "staaatue…",
- "pool_fz_burst_0": "hahaha — you're SO good at this!",
- "pool_fz_burst_1": "not even a wiggle!!",
- "pool_fz_burst_2": "champion statue!!",
- "end_return": "okay okay — come here!",
- "end_goodbye_full": "same time tomorrow? …I'll be here!",
- "end_goodbye_quick": "see you tomorrow — I'll be here!",
- "end_quit": "hey — that was FUN. come finish it with me tomorrow?",
- "end_gone": "bye friend — I'll be here!",
- "end_again": "AGAIN?! okay okay—",
- "end_bravery": "you kept GOING — I saw you!",
- "end_techblame": "the lights were being silly today! tomorrow we go again!",
- "dep_finish": "tomorrow we finish that song — you're SO close!",
- "dep_topic": "and tomorrow you tell me about that — deal?!",
- "tease_hello": "next time — the WAVE. you'll LOVE it.",
- "tease_wave": "next time — the freeze one. you'll LOVE it.",
- "tease_joined": "next time — Hello Hello. you'll LOVE it.",
- "tease_freeze": "next time — the groove one. you'll LOVE it.",
- "cb_hello_0": "that FREEZE — you didn't move a whisker!",
- "cb_hello_1": "your clap got SO strong by the end!",
- "cb_hello_2": "the Nova-says verse — you caught every one!",
- "cb_wave_0": "the light rode your WHOLE arm!",
- "cb_wave_1": "wrist to shoulder — smooooth!",
- "cb_wave_2": "those elbows found the wave!",
- "cb_joined_0": "the move-it-all part — you were FLYING!",
- "cb_joined_1": "those hips found the beat!",
- "cb_joined_2": "when it went DOUBLE speed — you stayed ON it!",
- "cb_freeze_0": "FIVE seconds of statue — champion!",
- "cb_freeze_1": "best statue I ever met!"
+ "greet": {
+  "text": "hi! I'm Nova — your magic friend! …what's your name?",
+  "dur": 5.02
+ },
+ "lead_picker": {
+  "text": "come — I'll show you! let's pick a game together!",
+  "dur": 3.74
+ },
+ "ack_generic": {
+  "text": "ooh!",
+  "dur": 0.36
+ },
+ "ch_shoulder_cue": {
+  "text": "okay… see that sparkle? can you nudge that RIGHT shoulder?",
+  "dur": 5.96
+ },
+ "ch_shoulder_filler": {
+  "text": "let's see it… give that shoulder a little push!",
+  "dur": 4.22
+ },
+ "ch_shoulder_wow": {
+  "text": "WOW — that RIGHT shoulder! that was a GOOD one!",
+  "dur": 4.97
+ },
+ "ch_left_cue": {
+  "text": "let's try another one — raise your LEFT hand, way UP high!",
+  "dur": 5.63
+ },
+ "ch_left_filler": {
+  "text": "go on… that LEFT hand, up to the sky!",
+  "dur": 4.64
+ },
+ "ch_left_wow": {
+  "text": "WOW — that LEFT hand shot UP! amazing!",
+  "dur": 4.76
+ },
+ "ch_close_win": {
+  "text": "ready to dance? push the big button — or say 'let's start'!",
+  "dur": 5.81
+ },
+ "ch_close_miss": {
+  "text": "I LOVE that energy! ready to dance? push the big button!",
+  "dur": 5.55
+ },
+ "score_hello_0": {
+  "text": "copy the song — I'm with you!",
+  "dur": 2.25
+ },
+ "score_hello_1": {
+  "text": "on your HEAD — hehe!",
+  "dur": 1.44
+ },
+ "score_hello_2": {
+  "text": "ooh — MY verse! listen close!",
+  "dur": 2.67
+ },
+ "score_hello_3": {
+  "text": "fast fast fast — GO!",
+  "dur": 3.33
+ },
+ "score_hello_6": {
+  "text": "you did the WHOLE song!",
+  "dur": 1.84
+ },
+ "score_wave_0": {
+  "text": "shoulders… ROLL!",
+  "dur": 1.41
+ },
+ "score_wave_1": {
+  "text": "again — roll!",
+  "dur": 1.71
+ },
+ "score_wave_2": {
+  "text": "now ELBOWS — pump!",
+  "dur": 2.76
+ },
+ "score_wave_3": {
+  "text": "other one!",
+  "dur": 1.05
+ },
+ "score_wave_4": {
+  "text": "wrists — wave it!",
+  "dur": 1.64
+ },
+ "score_wave_5": {
+  "text": "wave wave!",
+  "dur": 1.17
+ },
+ "score_wave_6": {
+  "text": "let the light ride up your arm!",
+  "dur": 1.99
+ },
+ "score_wave_9": {
+  "text": "THAT was a wave!",
+  "dur": 1.32
+ },
+ "score_joined_0": {
+  "text": "find the beat… bounce with me…",
+  "dur": 2.48
+ },
+ "score_joined_1": {
+  "text": "just your HEAD — left… right…",
+  "dur": 3.6
+ },
+ "score_joined_2": {
+  "text": "now SHOULDERS!",
+  "dur": 1.51
+ },
+ "score_joined_3": {
+  "text": "RIBS — slide 'em!",
+  "dur": 3.46
+ },
+ "score_joined_4": {
+  "text": "this one's tricky — you got it!",
+  "dur": 3.03
+ },
+ "score_joined_5": {
+  "text": "HIPS! sway it!",
+  "dur": 4.07
+ },
+ "score_joined_10": {
+  "text": "that was ALL of you — wow!",
+  "dur": 4.14
+ },
+ "score_freeze_0": {
+  "text": "dance dance dance!",
+  "dur": 1.48
+ },
+ "score_freeze_3": {
+  "text": "robot arms!",
+  "dur": 1.45
+ },
+ "score_freeze_6": {
+  "text": "reach for the SKY!",
+  "dur": 1.67
+ },
+ "score_freeze_10": {
+  "text": "the BIG one… statue… staaatue…",
+  "dur": 4.08
+ },
+ "score_freeze_11": {
+  "text": "FIVE SECONDS!! you're a champion statue!!",
+  "dur": 5.8
+ },
+ "score_freeze_12": {
+  "text": "wave byyye!",
+  "dur": 1.69
+ },
+ "pool_hit_echo_0": {
+  "text": "yes!",
+  "dur": 0.66
+ },
+ "pool_hit_echo_1": {
+  "text": "there!",
+  "dur": 1.13
+ },
+ "pool_hit_echo_2": {
+  "text": "that's it!",
+  "dur": 1.87
+ },
+ "pool_hit_echo_3": {
+  "text": "woo!",
+  "dur": 0.73
+ },
+ "pool_clap_along_0": {
+  "text": "clap-clap — YES!",
+  "dur": 2.72
+ },
+ "pool_clap_along_1": {
+  "text": "clap it clap it!",
+  "dur": 1.37
+ },
+ "pool_clap_along_2": {
+  "text": "hehe — clap!",
+  "dur": 0.61
+ },
+ "pool_freeze_whisper_0": {
+  "text": "freeeeze… don't move…",
+  "dur": 3.4
+ },
+ "pool_freeze_whisper_1": {
+  "text": "shhh… so still…",
+  "dur": 2.56
+ },
+ "pool_freeze_whisper_2": {
+  "text": "statue time…",
+  "dur": 1.68
+ },
+ "pool_freeze_burst_0": {
+  "text": "a STATUE!! hahaha!",
+  "dur": 2.09
+ },
+ "pool_freeze_burst_1": {
+  "text": "you didn't MOVE! amazing!",
+  "dur": 5.27
+ },
+ "pool_freeze_burst_2": {
+  "text": "hahaha PERFECT freeze!",
+  "dur": 4.48
+ },
+ "pool_chain_open_0": {
+  "text": "watch the light — the WHOLE wave—",
+  "dur": 2.8
+ },
+ "pool_chain_open_1": {
+  "text": "here it comes — follow it—",
+  "dur": 1.8
+ },
+ "pool_freestyle_0": {
+  "text": "now YOU — wave it ALL!",
+  "dur": 2.16
+ },
+ "pool_freestyle_1": {
+  "text": "your wave now — GO!",
+  "dur": 1.72
+ },
+ "pool_double_call_0": {
+  "text": "DOUBLE TIME!! go go go!",
+  "dur": 2.23
+ },
+ "pool_double_call_1": {
+  "text": "twice as fast — GO!",
+  "dur": 2.06
+ },
+ "pool_combo_joy_0": {
+  "text": "EVERYTHING at once!!",
+  "dur": 1.53
+ },
+ "pool_combo_joy_1": {
+  "text": "don't stop!!",
+  "dur": 1.1
+ },
+ "pool_combo_joy_2": {
+  "text": "BIGGER!",
+  "dur": 0.91
+ },
+ "pool_combo_joy_3": {
+  "text": "this is IT!!",
+  "dur": 1.37
+ },
+ "pool_fz_whisper_0": {
+  "text": "shhh… nobody moves…",
+  "dur": 3.4
+ },
+ "pool_fz_whisper_1": {
+  "text": "still… still…",
+  "dur": 2.8
+ },
+ "pool_fz_whisper_2": {
+  "text": "staaatue…",
+  "dur": 1.68
+ },
+ "pool_fz_burst_0": {
+  "text": "hahaha — you're SO good at this!",
+  "dur": 2.16
+ },
+ "pool_fz_burst_1": {
+  "text": "not even a wiggle!!",
+  "dur": 1.48
+ },
+ "pool_fz_burst_2": {
+  "text": "champion statue!!",
+  "dur": 3.33
+ },
+ "end_return": {
+  "text": "okay okay — come here!",
+  "dur": 2.44
+ },
+ "end_goodbye_full": {
+  "text": "same time tomorrow? …I'll be here!",
+  "dur": 3.63
+ },
+ "end_goodbye_quick": {
+  "text": "see you tomorrow — I'll be here!",
+  "dur": 1.99
+ },
+ "end_quit": {
+  "text": "hey — that was FUN. come finish it with me tomorrow?",
+  "dur": 4.39
+ },
+ "end_gone": {
+  "text": "bye friend — I'll be here!",
+  "dur": 2.9
+ },
+ "end_again": {
+  "text": "AGAIN?! okay okay—",
+  "dur": 2.64
+ },
+ "end_bravery": {
+  "text": "you kept GOING — I saw you!",
+  "dur": 2.91
+ },
+ "end_techblame": {
+  "text": "the lights were being silly today! tomorrow we go again!",
+  "dur": 5.17
+ },
+ "dep_finish": {
+  "text": "tomorrow we finish that song — you're SO close!",
+  "dur": 3.74
+ },
+ "dep_topic": {
+  "text": "and tomorrow you tell me about that — deal?!",
+  "dur": 3.2
+ },
+ "tease_hello": {
+  "text": "next time — the WAVE. you'll LOVE it.",
+  "dur": 2.57
+ },
+ "tease_wave": {
+  "text": "next time — the freeze one. you'll LOVE it.",
+  "dur": 3.6
+ },
+ "tease_joined": {
+  "text": "next time — Hello Hello. you'll LOVE it.",
+  "dur": 4.75
+ },
+ "tease_freeze": {
+  "text": "next time — the groove one. you'll LOVE it.",
+  "dur": 4.96
+ },
+ "cb_hello_0": {
+  "text": "that FREEZE — you didn't move a whisker!",
+  "dur": 3.21
+ },
+ "cb_hello_1": {
+  "text": "your clap got SO strong by the end!",
+  "dur": 4.68
+ },
+ "cb_hello_2": {
+  "text": "the Nova-says verse — you caught every one!",
+  "dur": 4.31
+ },
+ "cb_wave_0": {
+  "text": "the light rode your WHOLE arm!",
+  "dur": 2.72
+ },
+ "cb_wave_1": {
+  "text": "wrist to shoulder — smooooth!",
+  "dur": 2.49
+ },
+ "cb_wave_2": {
+  "text": "those elbows found the wave!",
+  "dur": 1.98
+ },
+ "cb_joined_0": {
+  "text": "the move-it-all part — you were FLYING!",
+  "dur": 4.03
+ },
+ "cb_joined_1": {
+  "text": "those hips found the beat!",
+  "dur": 3.12
+ },
+ "cb_joined_2": {
+  "text": "when it went DOUBLE speed — you stayed ON it!",
+  "dur": 4.56
+ },
+ "cb_freeze_0": {
+  "text": "FIVE seconds of statue — champion!",
+  "dur": 4.47
+ },
+ "cb_freeze_1": {
+  "text": "best statue I ever met!",
+  "dur": 3.03
+ }
 }
