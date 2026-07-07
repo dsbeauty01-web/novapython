@@ -1,0 +1,27 @@
+/* shared layout for all three Nova games — kid's view, no debug chrome */
+:root { --banner: #FFD27A; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #07090e; overflow: hidden;
+  font-family: system-ui, "Segoe UI", Arial, sans-serif; color: #e7ecf5; }
+#stage { position: fixed; inset: 0; }
+/* the real webcam, mirrored like a selfie so movements match the kid */
+#cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  transform: scaleX(-1); background: #0b0f17; }
+/* transparent FX canvas ON TOP of the video — the magic light lives here */
+#fx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+/* version banner — unique color per build (the versioning rule) */
+#banner { position: absolute; top: 10px; left: 12px; z-index: 6; font-size: 12px;
+  font-weight: 800; letter-spacing: .6px; padding: 5px 11px; border-radius: 999px;
+  background: var(--banner); color: #0a1018; box-shadow: 0 2px 10px #0009; }
+#status { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 6;
+  font-size: 12px; color: #aeb9cd; background: #0c121caa; padding: 4px 10px; border-radius: 999px; }
+/* Nova's orb — a 12vw ellipse in the corner, never grows over the dance/kid */
+#nova { position: absolute; right: 14px; bottom: 14px; width: 12vw; max-width: 110px;
+  aspect-ratio: 1; border-radius: 50%; z-index: 5;
+  background: radial-gradient(circle at 38% 34%, #fff, #ffd27a 45%, #ff9a3d 78%, #b8590a);
+  box-shadow: 0 0 26px #ffb14d77; animation: novaBreath 3.4s ease-in-out infinite; }
+@keyframes novaBreath { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+/* optional small dance-reference panel (the MP4 the kid copies) */
+#dance { position: absolute; left: 14px; bottom: 14px; width: 22vw; max-width: 220px;
+  aspect-ratio: 3/4; border-radius: 14px; z-index: 5; object-fit: cover;
+  background: #11161f; box-shadow: 0 4px 18px #000a; }

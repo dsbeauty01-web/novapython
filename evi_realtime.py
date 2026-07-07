@@ -38,6 +38,7 @@ import base64
 import io
 import json
 import os
+import time
 import wave
 import weakref
 from dataclasses import dataclass
@@ -213,6 +214,7 @@ class HumeEVIRealtimeModel(RealtimeModel):
         if self._greet_fired and not retry:
             return False
         self._greet_fired = True
+        self._mouth_hold = False   # worker-ordered speech — the mouth is licensed
         text = ("(if you have NOT greeted yet: greet now. if you ALREADY greeted or are speaking "
                 "right now: just warmly ask their name again, one short line, nothing else)"
                 if retry else
@@ -418,6 +420,13 @@ class HumeEVIRealtimeSession(
         user_input=   → her brain RESPONDS to the text (typed chat path —
                         was silently unsupported before 2026-07-03; typing got no reply)."""
         fut: asyncio.Future[GenerationCreatedEvent] = asyncio.Future()
+
+        # ONE BEAT = ONE MOUTH: an explicit worker order licenses the mouth —
+        # only spontaneous EVI speech stays held during clip-owned beats.
+        try:
+            self._realtime_model._mouth_hold = False
+        except Exception:
+            pass
 
         text = instructions if is_given(instructions) else ""
         if text:
@@ -632,9 +641,13 @@ class HumeEVIRealtimeSession(
             self._handle_user_message(msg)
 
         elif mtype == "assistant_message":
+            if self._mouth_is_held("assistant_message", msg):
+                return
             self._handle_assistant_message(msg)
 
         elif mtype == "audio_output":
+            if self._mouth_is_held("audio_output", msg):
+                return
             self._handle_audio_output(msg)
 
         elif mtype == "user_interruption":
@@ -667,11 +680,41 @@ class HumeEVIRealtimeSession(
 
         # tool_call / assistant_prosody etc. are ignored in this draft.
 
+    def _mouth_is_held(self, kind: str, msg: dict[str, Any]) -> bool:
+        """ONE BEAT = ONE MOUTH (2026-07-07 hara.txt): while a beat is clip-owned,
+        ALL spontaneous EVI speech is suppressed — dropped here AND cancelled at the
+        source, so her live voice can never land on top of a clip. Worker orders
+        (generate_reply / fire_greeting) clear the hold before they speak."""
+        model = getattr(self, "_realtime_model", None)
+        if model is None or not getattr(model, "_mouth_hold", False):
+            return False
+        now = time.monotonic()
+        if now - getattr(self, "_hold_kill_at", 0.0) > 2.0:
+            self._hold_kill_at = now
+            logger.error(f"[ONE-MOUTH] EVI spontaneous {kind} during a clip-owned beat — suppressed + cancelled")
+            try:
+                self._send({"type": "pause_assistant_message"})
+                self._finish_generation()
+                self._send({"type": "resume_assistant_message"})
+            except Exception:
+                pass
+        return True
+
     def _handle_user_message(self, msg: dict[str, Any]) -> None:
         # EVI's server-side VAD has produced (an interim or final) user transcript.
         content = (msg.get("message") or {}).get("content", "")
         interim = bool(msg.get("interim", False))
         item_id = msg.get("id") or utils.shortuuid("user_")
+
+        # ONE BEAT = ONE MOUTH: real kid input AFTER the clip re-licenses her mouth —
+        # her natural reply to the kid is exactly what V2V wants. During a clip the
+        # ears are closed, so anything arriving here mid-clip is stale — keep held.
+        if not interim:
+            model = getattr(self, "_realtime_model", None)
+            if (model is not None and getattr(model, "_mouth_hold", False)
+                    and not getattr(model, "_clip_playing", False)):
+                model._mouth_hold = False
+                logger.info("[ONE-MOUTH] kid input after clip → mouth re-licensed")
 
         # Treat arrival of a user message as the user having spoken: surface
         # speech start/stop for turn-taking metrics. (EVI itself drives turns.)

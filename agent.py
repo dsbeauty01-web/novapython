@@ -778,6 +778,13 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     logger.info(f"[chat] user-said: '{text[:80]}'")
                     asyncio.create_task(_user_said(session, state, agent, text))
 
+            elif kind == "clip-ack" and msg.get("ev") == "duet-pause":
+                # ONE-BEAT-ONE-MOUTH INVARIANT: a clip pausing under her live voice
+                # in a conversation beat means TWO mouths were ordered — that is the
+                # double-voice bug, and it must scream in the logs, never hide.
+                logger.error(f"[ONE-MOUTH] clip '{msg.get('id')}' paused under live EVI voice "
+                             f"(beat {msg.get('beat')}) — two mouths were ordered")
+
             elif kind == "client-log":
                 # Browser telemetry batch — print each entry so the full session
                 # (client + server) lands in ONE log stream, correlated by time.
@@ -810,6 +817,11 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                         return
                     state._reveal_greeted = True
                     llm_obj = getattr(state, "_evi_model", None) or getattr(session, "llm", None)
+                    # V2V: the ears open HERE — the reveal is the start of the
+                    # conversation; anything the mic caught before it is not a turn.
+                    if llm_obj is not None and _v2v_on():
+                        llm_obj._ears_open = True
+                        logger.info("[EARS] door OPEN (reveal — conversation starts)")
                     # CLIP GREETING (root fix): first meetings get the pre-rendered hello
                     # INSTANTLY (the 25-45s cold gen was the single worst latency wart).
                     # Returning kids keep the live EVI greet (deposit opener needs her brain).
@@ -914,6 +926,11 @@ async def _nova_say(session: AgentSession, line: str):
             _model = getattr(st, "_evi_model", None)
             if _model is not None and _v2v_on():
                 _model._ears_open = False
+                # ONE BEAT = ONE MOUTH: this beat is clip-owned — EVI generation is
+                # HELD until the clip ends AND kid input arrives (or the worker
+                # explicitly orders her next line). Suppression enforced in the bridge.
+                _model._mouth_hold = True
+                _model._clip_playing = True
                 try:
                     _r = session.interrupt()
                     if asyncio.iscoroutine(_r):
@@ -940,6 +957,7 @@ async def _nova_say(session: AgentSession, line: str):
             await asyncio.sleep(cdur + 0.25)
             st._last_nova_at = time.time()
             if _model is not None and _v2v_on():
+                _model._clip_playing = False
                 _open = getattr(st.ctx, "phase", "intro") in ("intro", "recognition", "goodbye")
                 _model._ears_open = _open
                 logger.info(f"[EARS] clip done → door {'OPEN' if _open else 'CLOSED'} (phase {getattr(st.ctx, 'phase', '?')})")
@@ -2616,9 +2634,14 @@ async def entrypoint(ctx: JobContext):
             except Exception as pe:
                 logger.exception(f"[nova-evi] prompt build FAILED → using Hume config prompt: {pe}")
             _evi_model = HumeEVIRealtimeModel(system_prompt=evi_prompt)   # keys/config from env
-            _evi_model._ears_open = _v2v_on()   # V2V: door open for the intro conversation
+            # ONE-BEAT-ONE-MOUTH (2026-07-07 hara.txt): pre-reveal audio used to pile
+            # up in EVI and come back as a live reply ON TOP of the greet clip. Ears
+            # stay CLOSED until reveal-now, and the mouth is HELD until the first
+            # worker-ordered speech or kid input after a clip.
+            _evi_model._ears_open = False
+            _evi_model._mouth_hold = True
             if _v2v_on():
-                logger.info("[EARS] door OPEN (session start, intro)")
+                logger.info("[EARS] door CLOSED until reveal (no pre-reveal turns)")
             state._evi_model = _evi_model   # reveal-now handler fires the greeting through this
             if direct_game:
                 # game link: one excited hello, no name question — the game starts in seconds
