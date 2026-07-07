@@ -906,6 +906,20 @@ async def _nova_say(session: AgentSession, line: str):
     cid, cdur = (hit if hit else (None, 0.0))
     if cid and st is not None and getattr(st, "room", None) is not None:
         try:
+            # V2V NO-SELF-HEARING (spec Stage 1, was missing): her clip voice plays on
+            # the kid's SPEAKERS — with the door open the mic feeds it straight back to
+            # EVI, which answers "the other voice" = the live double-voice bug. Ears
+            # CLOSED for the clip's exact duration, and any in-flight EVI speech is cut
+            # first (one mouth). Door restores to the phase's base state afterwards.
+            _model = getattr(st, "_evi_model", None)
+            if _model is not None and _v2v_on():
+                _model._ears_open = False
+                try:
+                    _r = session.interrupt()
+                    if asyncio.iscoroutine(_r):
+                        await _r
+                except Exception:
+                    pass
             await st.room.local_participant.publish_data(
                 json.dumps({"kind": "play-clip", "id": cid}).encode("utf-8"), reliable=True)
             # CONTEXT SYNC: her brain must know what her mouth just said (clips bypass
@@ -925,6 +939,10 @@ async def _nova_say(session: AgentSession, line: str):
             # ask-first arming, goodbye beats, input windows.
             await asyncio.sleep(cdur + 0.25)
             st._last_nova_at = time.time()
+            if _model is not None and _v2v_on():
+                _open = getattr(st.ctx, "phase", "intro") in ("intro", "recognition", "goodbye")
+                _model._ears_open = _open
+                logger.info(f"[EARS] clip done → door {'OPEN' if _open else 'CLOSED'} (phase {getattr(st.ctx, 'phase', '?')})")
             return True
         except Exception as e:
             logger.warning(f"[CLIP] publish failed → EVI fallback: {e}")
