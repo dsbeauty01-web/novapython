@@ -1125,6 +1125,20 @@ class TurnEngine:
         if model is None:
             await self.ask(fallback_line)
             return
+        # ONE MOUTH (2026-07-07 live run): when the previous beat was resolved by
+        # her OWN hearing, EVI is already answering the kid — firing this brief's
+        # generation on top was the "she spoke twice" bug. Let her natural reply
+        # start and finish first (min 2s for it to begin, done = 1.8s quiet, cap 10s).
+        _res = getattr(self, "_last_resolution", None)
+        if _res is not None and _res[0] == "stt" and time.time() - _res[1] < 6.0:
+            _w0 = time.time()
+            while time.time() - _w0 < 10.0:
+                _quiet = time.time() - getattr(self.state, "_last_nova_at", 0)
+                if (not getattr(self.state, "_is_speaking", False)
+                        and _quiet > 1.8 and time.time() - _w0 > 2.0):
+                    break
+                await asyncio.sleep(0.25)
+            logger.info(f"[TURN] her own reply landed first — brief '{self.beat_name}' follows (one mouth)")
         try:
             model.push_context(f"(BEAT '{self.beat_name}': {goal})")
         except Exception:
@@ -1174,6 +1188,7 @@ class TurnEngine:
             logger.info(f"[TURN] input '{kind}':'{str(val)[:30]}' does not resolve beat '{self.beat_name}'")
             return False
         self._result = (kind, r)
+        self._last_resolution = (kind, time.time())
         self.listening = False
         self._got.set()
         logger.info(f"[TURN] beat '{self.beat_name}' RESOLVED by {kind}: {str(r)[:40]}")
@@ -2525,17 +2540,38 @@ async def entrypoint(ctx: JobContext):
         kind = getattr(publication, "kind", "?")
         logger.info(f"[MIC-IN] {participant.identity} published {kind} track")
 
-    # FIX (idle nudges after disconnect): when the kid leaves, the AgentSession
-    # closes immediately, but state.active only flipped in the shutdown callback
-    # ~20s later — so the idle loop kept calling session.say() and logging
-    # "[idle] nudge failed: AgentSession isn't running". Flip it the INSTANT a
-    # non-agent participant disconnects so the idle loop stops on its next tick.
+    # RECONNECT GRACE (2026-07-07 live run): a one-second network blip used to end
+    # the session for good — the kid's page came right back, but state.active was
+    # already False and (worse) the AgentSession had closed, so the rest of the run
+    # was clips-only with "AgentSession isn't running" errors. A disconnect now
+    # starts a 60s grace timer; only a kid who truly never returns stops the loops.
+    # Room close (below) stays immediate — that IS final.
+    _kid_gone = {"t": None}
+
     @ctx.room.on("participant_disconnected")
     def _on_participant_left(participant):
         ident = getattr(participant, "identity", "?")
-        if not str(ident).startswith(("runway-", "agent-", "nova")):
-            state.active = False
-            logger.info(f"[nova-v207] kid {ident} disconnected → stopping idle loop")
+        if str(ident).startswith(("runway-", "agent-", "nova")):
+            return
+        _kid_gone["t"] = time.time()
+        logger.info(f"[nova-v207] kid {ident} disconnected → 60s reconnect grace")
+
+        async def _grace_kill():
+            await asyncio.sleep(60.0)
+            if _kid_gone["t"] is not None and time.time() - _kid_gone["t"] >= 59.0:
+                state.active = False
+                logger.info("[nova-v207] kid never returned (60s grace) → stopping session loops")
+
+        asyncio.create_task(_grace_kill())
+
+    @ctx.room.on("participant_connected")
+    def _on_participant_joined(participant):
+        ident = getattr(participant, "identity", "?")
+        if str(ident).startswith(("runway-", "agent-", "nova")):
+            return
+        if _kid_gone["t"] is not None:
+            logger.info(f"[nova-v207] kid {ident} RECONNECTED → grace cancelled, session continues")
+        _kid_gone["t"] = None
 
     @ctx.room.on("disconnected")
     def _on_room_disconnected(*_a):
@@ -2756,6 +2792,11 @@ async def entrypoint(ctx: JobContext):
                 # 16000Hz. Wrong rate = no transcripts (silent fail). This may
                 # also be why Deepgram silently produced nothing.
                 audio_sample_rate=16000,
+                # RECONNECT GRACE (2026-07-07): the default closed the AgentSession
+                # on a one-second network blip and it never came back ("AgentSession
+                # isn't running" for the whole rest of the run). The grace timer on
+                # participant_disconnected owns end-of-session now.
+                close_on_disconnect=False,
             ),
         )
         logger.info("[nova-v207] step 5: session.start COMPLETE (kid-audio + text subscribed)")
