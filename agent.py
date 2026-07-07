@@ -2792,11 +2792,11 @@ async def entrypoint(ctx: JobContext):
                 # 16000Hz. Wrong rate = no transcripts (silent fail). This may
                 # also be why Deepgram silently produced nothing.
                 audio_sample_rate=16000,
-                # RECONNECT GRACE (2026-07-07): the default closed the AgentSession
-                # on a one-second network blip and it never came back ("AgentSession
-                # isn't running" for the whole rest of the run). The grace timer on
-                # participant_disconnected owns end-of-session now.
-                close_on_disconnect=False,
+                # NOTE (2026-07-07): close_on_disconnect=False was tried here and
+                # REVERTED the same hour — with it set, EVERY generate_reply timed
+                # out (15s, no EVI response) while a direct Hume ws test was fine.
+                # The reconnect problem is handled by the grace timer on
+                # participant_disconnected instead.
             ),
         )
         logger.info("[nova-v207] step 5: session.start COMPLETE (kid-audio + text subscribed)")
