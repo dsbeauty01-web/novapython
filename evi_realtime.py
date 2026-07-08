@@ -685,7 +685,15 @@ class HumeEVIRealtimeSession(
 
                     async def _resend() -> None:
                         await asyncio.sleep(1.5)
-                        self._send(self._session_settings_msg())
+                        # PROMPT-ONLY resend (2026-07-08 E0704): the full settings
+                        # carry the audio block, which Hume REJECTS once audio has
+                        # flowed ("unable_to_configure_audio") — that second error
+                        # used to storm the session and eat pending typed turns.
+                        rt = self._realtime_model
+                        msg: dict[str, Any] = {"type": "session_settings"}
+                        if rt._system_prompt:
+                            msg["system_prompt"] = rt._system_prompt
+                        self._send(msg)
 
                     asyncio.create_task(_resend())
                 else:
