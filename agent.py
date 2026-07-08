@@ -69,7 +69,6 @@ from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli
 from livekit.plugins import (
-    deepgram,
     elevenlabs,
     runway,
     silero,
@@ -879,10 +878,9 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
 # Reaction helpers
 # ────────────────────────────────────────────────────────────────────────
 def _evi_on() -> bool:
-    # TEMP (2026-07-01): EVI forced OFF so Nova greets via the proven
-    # Deepgram→LLM→ElevenLabs path (session.say). The Hume EVI websocket greeting
-    # was timing out silently → Nova mute. To bring EVI back later WITHOUT a code
-    # change, set env NOVA_FORCE_ELEVENLABS=0 (and USE_EVI=1); or delete this block.
+    # HUME-ONLY (2026-07-08): Deepgram STT is deleted, so there is no fallback
+    # pipeline anymore — the entrypoint guard REQUIRES this to return True.
+    # Render env must have NOVA_FORCE_ELEVENLABS=0 and USE_EVI=1.
     if os.getenv("NOVA_FORCE_ELEVENLABS", "1") == "1":
         return False
     return os.getenv("USE_EVI", "").lower() in ("1", "true", "yes", "on")
@@ -2458,11 +2456,12 @@ async def entrypoint(ctx: JobContext):
         logger.error("[nova-v207] FATAL: OPENAI_API_KEY missing on worker")
         raise RuntimeError("OPENAI_API_KEY required — add it on Render → worker → Environment")
 
-    # Phase-1 STT swap: Deepgram needs its own key. Fail loud at boot rather than
-    # silently producing zero transcripts (the old "Nova can't hear me" failure).
-    if not os.getenv("DEEPGRAM_API_KEY"):
-        logger.error("[nova-v207] FATAL: DEEPGRAM_API_KEY missing on worker (STT is now Deepgram nova-3)")
-        raise RuntimeError("DEEPGRAM_API_KEY required — add it on Render → worker → Environment")
+    # HUME-ONLY (2026-07-08, user order): Deepgram STT deleted — EVI is the one
+    # ear. If the EVI env flags are ever unset there is NO STT fallback anymore,
+    # so fail loud here instead of starting a session that can't hear.
+    if not _evi_on():
+        logger.error("[nova-v207] FATAL: EVI is OFF but Deepgram STT was removed — set USE_EVI=1 and NOVA_FORCE_ELEVENLABS=0")
+        raise RuntimeError("HUME-ONLY: USE_EVI=1 required (Deepgram STT deleted 2026-07-08)")
 
     # BRAIN: Groq (Llama 3.3 70B, ~0.2s first token) when GROQ_API_KEY is set —
     # cuts ~0.8s off her response vs gpt-4o-mini (~1s). Falls back to gpt-4o-mini
@@ -2499,36 +2498,11 @@ async def entrypoint(ctx: JobContext):
         )
     )
 
-    # Build session pipeline
+    # Build session pipeline.
+    # NO STT: Deepgram deleted (2026-07-08). EVI hears the kid directly
+    # (speech-to-speech) — the _evi_on() guard above makes EVI mandatory, and the
+    # EVI branch below replaces this dict wholesale.
     session_kwargs = dict(
-        # ─────────────────────────────────────────────────────────────
-        # STT: Deepgram Nova-3 (Phase-1 STT swap, Jun 17 2026).
-        # Replaces both (a) the old browser SpeechRecognition path and
-        # (b) the OpenAI Whisper worker STT. Server-side streaming STT —
-        # ~200-300ms faster than browser endpointing, better at kid mishears.
-        #
-        # NOTE on the earlier "Deepgram broken" history: prior failure showed
-        # [MIC-IN] subscribed but ZERO [HEAR] lines. Two plausible causes were
-        # since fixed independently: (1) RoomInputOptions now forces 16kHz
-        # audio (wrong sample rate silently produced nothing), (2) we now set
-        # interim_results=True so transcripts stream continuously. If [HEAR]
-        # lines STILL never appear after deploy, it's an account-entitlement
-        # issue on nova-3 streaming → revert this block to OpenAI Whisper.
-        #
-        # endpointing=400ms matches the Silero VAD min_silence (0.4s) so turn
-        # detection feels identical to before. Uses DEEPGRAM_API_KEY (worker env).
-        # ─────────────────────────────────────────────────────────────
-        stt=deepgram.STT(
-            model=os.getenv("NOVA_STT_MODEL", "nova-3"),
-            language=os.getenv("NOVA_STT_LANG", "en"),
-            smart_format=True,
-            interim_results=True,
-            # `endpointing_ms` (NOT `endpointing`). LATENCY: 400→250→180ms so she
-            # answers sooner after a short kid utterance ("yes", "done"). Floor ~150ms
-            # (below that she cuts kids off mid-pause).
-            endpointing_ms=int(os.getenv("NOVA_STT_ENDPOINTING", "180")),
-            api_key=os.getenv("DEEPGRAM_API_KEY"),
-        ),
         llm=llm_instance,
         tts=elevenlabs.TTS(
             # LOORA1 (cloned voice P6xfJudBtfcB1BM5ZWR7) — kid-warm presence.
@@ -2673,7 +2647,7 @@ async def entrypoint(ctx: JobContext):
     # ─────────────────────────────────────────────────────────────
     # HEAVY LOGGING HOOKS — distinct log line at each pipeline stage.
     # Each step gets a tag so we can tell exactly WHERE a session breaks:
-    #   [HEAR]  — Deepgram transcribed kid's voice
+    #   [HEAR]  — kid's voice transcribed (Hume EVI's own ASR — Deepgram deleted 2026-07-08)
     #   [TYPE]  — kid typed (via user-said)
     #   [BRAIN] — Gemini being called / replied / failed
     #   [SPEAK] — Nova spoke (audio went out)
@@ -2688,7 +2662,7 @@ async def entrypoint(ctx: JobContext):
             is_final = getattr(ev, "is_final", True)
             if not text.strip():
                 return
-            # Log BOTH interim and final so we can see Deepgram is alive at all
+            # Log BOTH interim and final so we can see the ear (EVI ASR) is alive at all
             if is_final:
                 state.bump("turns")
                 logger.info(f"[HEAR] final ✓ kid voice → '{text[:80]}'")
@@ -2733,7 +2707,7 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.warning(f"[hook] user_input_transcribed unavailable: {e}")
 
-    # Direct STT error visibility — if Deepgram is rejecting audio we'll see it
+    # Direct error visibility — if the session's audio path is rejecting input we'll see it
     try:
         @session.on("error")
         def _on_session_error(ev):

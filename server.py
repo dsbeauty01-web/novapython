@@ -48,7 +48,6 @@ async def lifespan(app: FastAPI):
     logger.info(f"  ANTHROPIC: {bool(os.getenv('ANTHROPIC_API_KEY'))}")
     logger.info(f"  RUNWAY: {bool(os.getenv('RUNWAYML_API_SECRET'))}")
     logger.info(f"  ELEVENLABS: {bool(os.getenv('ELEVENLABS_API_KEY'))}")
-    logger.info(f"  DEEPGRAM: {bool(os.getenv('DEEPGRAM_API_KEY'))}")
     logger.info(f"  GEMINI: {bool(os.getenv('GEMINI_API_KEY'))}")
     yield
     logger.info("Nova v200 API shutting down")
@@ -98,7 +97,6 @@ async def diag():
             "LIVEKIT_API_SECRET": bool(LIVEKIT_API_SECRET),
             "ANTHROPIC_API_KEY": bool(os.getenv("ANTHROPIC_API_KEY")),
             "ELEVENLABS_API_KEY": bool(os.getenv("ELEVENLABS_API_KEY") or os.getenv("ELEVEN_API_KEY")),
-            "DEEPGRAM_API_KEY": bool(os.getenv("DEEPGRAM_API_KEY")),
             "GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
             "RUNWAYML_API_SECRET": bool(os.getenv("RUNWAYML_API_SECRET")),
         },

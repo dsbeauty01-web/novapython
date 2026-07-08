@@ -17,14 +17,14 @@
 > - **Frontend (live):** `dsbeauty01-web.github.io/dance-project/v113-live.html`  → local: `C:\Users\ADMIN\projects\dance-project\v113-live.html`
 > - **Server:** `novapython.onrender.com` (free tier — cold start 30-50s)
 > - **VOICE (LOCKED):** ElevenLabs Flash v2.5, Loora `P6xfJudBtfcB1BM5ZWR7` — stability 0.65, similarity 0.90, style 0.30, speed 0.92, speaker_boost True
-> - **STT (LOCKED, just deployed):** Deepgram Nova-3 server-side (browser SpeechRecognition disabled). model nova-3, lang en, smart_format True, endpointing 400ms. Tool calling still works.
+> - **STT: NONE — Deepgram DELETED (2026-07-08, user order).** Hume EVI hears the kid directly (speech-to-speech); [HEAR] logs come from EVI's own ASR. No STT fallback exists — worker refuses to start if USE_EVI≠1.
 > - **LLM:** OpenAI gpt-4o-mini, temp 0.85, 5-layer system prompt
 > - **AVATAR (LOCKED):** Runway custom Pixar Nova `e976bbb2-de60-4da6-845e-4b754050e55b`. HEAD + FACE ONLY (no body/hands). ~500ms lipsync tax.
 > - **VISION (LOCKED):** Gemini 2.5 Flash Lite via `/v2/vision-observe` (SDK now `google.genai`, was `google.generativeai`)
 > - **FILLERS:** 8 cached clips in `/audio/fillers/` — currently DISABLED on worker (caused 5-10s blocks)
 > - **Latency (warm):** STT-final → first audio ~855ms (700-1100ms). Bottleneck = Runway lipsync ~500ms fixed. Magic = <500ms.
 >
-> ### DO NOT TOUCH: Loora voice/settings · Deepgram STT · `/v2/vision-observe` · Runway UUID e976bbb2 · 5-layer prompt structure · worker-v222 (suspended, OpenAI is the brain)
+> ### DO NOT TOUCH: Loora voice/settings · `/v2/vision-observe` · Runway UUID e976bbb2 · 5-layer prompt structure · worker-v222 (suspended, OpenAI is the brain). Deepgram is DELETED — do not re-add it.
 >
 > ### NOVA PERSONA (locked)
 > Cool magical big-sister, 11-12 feel. 110% more excited than the kid. Smile-in-voice every reply.
