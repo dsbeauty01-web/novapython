@@ -1320,7 +1320,11 @@ class TurnEngine:
         still playing is eager, not out of turn — buffer it; listen() replays it
         the moment the window opens."""
         if not self.listening or self._matcher is None:
-            if kind in ("typed", "stt"):
+            # 2026-07-08 live log 09:26: a REAL shoulder move landed milliseconds
+            # after the window closed and was dropped → wrongly scored a miss.
+            # A detection is a fact about the body — buffer it like typed/stt;
+            # the retry window replays it and the kid gets their hit.
+            if kind in ("typed", "stt", "detection"):
                 self._eager = (kind, val, time.time())
                 logger.info(f"[TURN] eager input '{kind}' buffered (beat={self.beat_name}) — replayed when the window opens")
             else:
@@ -1492,6 +1496,14 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
         _k, r3 = await eng.listen(m_move, 7.0)
         if r3 != "hit":
             await eng.ask(mv["filler"])
+            try:   # re-arm the browser's one-report-per-cue guard — without a fresh
+                   # cue-part a second real move can never be reported (09:26 log)
+                await room.local_participant.publish_data(
+                    json.dumps({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]}).encode("utf-8"),
+                    reliable=True)
+                logger.info(f"[TURN] retry → light + detection RE-ARMED on {mv['joint']}")
+            except Exception:
+                pass
             _k, r3 = await eng.listen(m_move, 7.0)
         state._challenge_active = None
         if r3 == "hit":
