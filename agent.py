@@ -1012,7 +1012,11 @@ async def _nova_say(session: AgentSession, line: str):
         except Exception as e:
             logger.warning(f"[CLIP] publish failed → EVI fallback: {e}")
     try:
-        if _evi_on():
+        if _gemini_on():
+            # Gemini treats instructions as guidance, not a script — pin it verbatim
+            await session.generate_reply(
+                instructions=f'Say exactly this, word for word, nothing more: "{line}"')
+        elif _evi_on():
             await session.generate_reply(instructions=line)
         else:
             await session.say(line)
@@ -1547,6 +1551,13 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
 # untouched. Every V2V change MUST hide behind this flag until V2V-GOLD.
 def _v2v_on() -> bool:
     return os.getenv("NOVA_V2V", "0") == "1"
+
+
+def _gemini_on() -> bool:
+    # GEMINI LIVE FALLBACK (2026-07-08): USE_GEMINI=1 swaps the voice to Gemini
+    # Live (Hume credits ran out mid-test, user call: "use it, it's ok for now").
+    # Takes precedence over EVI when set; flip back to Hume by unsetting it.
+    return os.getenv("USE_GEMINI", "").lower() in ("1", "true", "yes", "on")
 
 
 _TALK_LEAD = float(os.getenv("NOVA_TALK_LEAD_SEC", "2.2"))   # measured: warm EVI delivery 2.2-3.4s
@@ -2680,12 +2691,12 @@ async def entrypoint(ctx: JobContext):
         logger.error("[nova-v207] FATAL: OPENAI_API_KEY missing on worker")
         raise RuntimeError("OPENAI_API_KEY required — add it on Render → worker → Environment")
 
-    # HUME-ONLY (2026-07-08, user order): Deepgram STT deleted — EVI is the one
-    # ear. If the EVI env flags are ever unset there is NO STT fallback anymore,
+    # V2V-ONLY (2026-07-08, user orders): Deepgram STT deleted — the ear is
+    # Hume EVI or Gemini Live. If neither flag is set there is NO STT fallback,
     # so fail loud here instead of starting a session that can't hear.
-    if not _evi_on():
-        logger.error("[nova-v207] FATAL: EVI is OFF but Deepgram STT was removed — set USE_EVI=1 and NOVA_FORCE_ELEVENLABS=0")
-        raise RuntimeError("HUME-ONLY: USE_EVI=1 required (Deepgram STT deleted 2026-07-08)")
+    if not (_evi_on() or _gemini_on()):
+        logger.error("[nova-v207] FATAL: no realtime voice — set USE_EVI=1 (+NOVA_FORCE_ELEVENLABS=0) or USE_GEMINI=1")
+        raise RuntimeError("V2V-ONLY: USE_EVI=1 or USE_GEMINI=1 required (Deepgram STT deleted 2026-07-08)")
 
     # BRAIN: Groq (Llama 3.3 70B, ~0.2s first token) when GROQ_API_KEY is set —
     # cuts ~0.8s off her response vs gpt-4o-mini (~1s). Falls back to gpt-4o-mini
@@ -2812,12 +2823,48 @@ async def entrypoint(ctx: JobContext):
         state.active = False
         logger.info("[nova-v207] room disconnected → stopping idle loop")
 
+    # ── GEMINI LIVE (fallback voice, 2026-07-08) — USE_GEMINI=1 wins ─────
+    _gemini_adapter = None
+    if _gemini_on():
+        try:
+            from livekit.plugins import google as google_rt
+            from gemini_voice import GeminiVoiceAdapter
+            evi_prompt = None
+            try:
+                evi_prompt = personality.build_evi_system_prompt(state.ctx, direct_game=direct_game)
+                logger.info(f"[nova-gemini] session prompt built ({len(evi_prompt)} chars)")
+            except Exception as pe:
+                logger.exception(f"[nova-gemini] prompt build FAILED → minimal prompt: {pe}")
+                evi_prompt = "You are NOVA, a warm magical movement friend. Short playful replies, always lead toward a dance."
+            _gemini_adapter = GeminiVoiceAdapter(system_prompt=evi_prompt)
+            _gemini_adapter._ears_open = False   # door CLOSED until reveal (same law as EVI)
+            _gemini_adapter._mouth_hold = True
+            if direct_game:
+                _gemini_adapter._greet_text_override = (
+                    "(the dancer just arrived and the dance game is starting "
+                    "right now — greet them with ONE short excited line, no questions)")
+            state._evi_model = _gemini_adapter
+            session_kwargs = {
+                "llm": google_rt.realtime.RealtimeModel(
+                    model=os.getenv("NOVA_GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
+                    voice=os.getenv("NOVA_GEMINI_VOICE", "Leda"),
+                    instructions=evi_prompt,
+                ),
+                "allow_interruptions": True,
+            }
+            logger.info(f"[nova-gemini] USE_GEMINI=1 → voice = Gemini Live "
+                        f"({os.getenv('NOVA_GEMINI_MODEL', 'gemini-3.1-flash-live-preview')}, "
+                        f"voice {os.getenv('NOVA_GEMINI_VOICE', 'Leda')})")
+        except Exception as e:
+            logger.exception(f"[nova-gemini] init FAILED — refusing silent fallback: {e}")
+            raise
+
     # ── HUME EVI 3 (speech-to-speech) — THE voice, no fallback ──────────
     # HUME-ONLY (user decision 2026-07-02): when EVI is on, Nova speaks Kora or she
     # doesn't start — NO silent switch to ElevenLabs (that's how the wrong voice shipped).
     # An init failure raises → the job dies loudly → the browser shows retry, and the
     # logs say exactly why (auth/credits/websocket).
-    if _evi_on():
+    elif _evi_on():
         try:
             from evi_realtime import HumeEVIRealtimeModel
             # PHASE 1 (2026-07-03): the recognition brain-prompt is built PER SESSION
@@ -2856,6 +2903,8 @@ async def entrypoint(ctx: JobContext):
 
     session = AgentSession(**session_kwargs)
     logger.info("[nova-v207] step 1: AgentSession created")
+    if _gemini_adapter is not None:
+        _gemini_adapter.bind(session)   # ears/mouth control surface goes live
 
     # Wire the pre-cached filler system (instant reactions while the LLM cooks).
     # Guarded so a filler problem can never block the session from starting.
