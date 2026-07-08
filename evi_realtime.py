@@ -435,6 +435,7 @@ class HumeEVIRealtimeSession(
         elif is_given(user_input) and user_input:
             # typed chat: EVI treats it exactly like a spoken kid line.
             self._send({"type": "user_input", "text": user_input})
+            logger.info(f"[EVI->] user_input sent: '{str(user_input)[:60]}'")
         else:
             # nudge: ask EVI to continue. With no text we simply mark user_initiated.
             pass
@@ -633,6 +634,19 @@ class HumeEVIRealtimeSession(
     def _handle_server_message(self, msg: dict[str, Any]) -> None:
         self.emit("hume_server_message_received", msg)
         mtype = msg.get("type")
+
+        # FIX-TYPED-CHAT diagnostics: every server message, with the mouth state —
+        # so a silently-eaten reply is visible in one log line. audio_output is
+        # throttled to once per second.
+        if mtype != "audio_output" or time.monotonic() - getattr(self, "_last_audio_log", 0.0) > 1.0:
+            if mtype == "audio_output":
+                self._last_audio_log = time.monotonic()
+            _model = getattr(self, "_realtime_model", None)
+            logger.info(f"[EVI<-] {mtype} (mouth_hold={getattr(_model, '_mouth_hold', '?')}, "
+                        f"clip={getattr(_model, '_clip_playing', '?')}, "
+                        f"gen={'live' if self._current_generation is not None else 'none'})"
+                        + (f" content='{(msg.get('message') or {}).get('content', '')[:60]}'"
+                           if mtype in ("assistant_message", "user_message") else ""))
 
         if mtype == "chat_metadata":
             logger.debug("EVI chat_metadata: %s", msg.get("chat_id"))
