@@ -1285,9 +1285,18 @@ class TurnEngine:
             _before = getattr(self.state, "_last_nova_at", 0)
             _w0 = time.time()
             while time.time() - _w0 < 10.0:
-                _quiet = time.time() - getattr(self.state, "_last_nova_at", 0)
+                # her reply LANDED (item added stamps _last_nova_at at turn end) → done
+                if (getattr(self.state, "_last_nova_at", 0) > _before
+                        and not getattr(self.state, "_is_speaking", False)):
+                    break
+                # FIX-TYPED-CHAT round 2 (2026-07-08 typed-only run): an EVI TEXT turn
+                # takes 2-6s to first audio — the old 2s-of-quiet heuristic fired the
+                # clip exactly as her typed reply was starting (interrupt killed it).
+                # A pending typed reply gets its full grace; voice keeps the short one.
+                _pend = getattr(self.state, "_typed_reply_pending", 0) or 0
+                _grace = 8.0 if time.time() - _pend < 12.0 else 3.0
                 if (not getattr(self.state, "_is_speaking", False)
-                        and _quiet > 1.8 and time.time() - _w0 > 2.0):
+                        and time.time() - _w0 > _grace):
                     break
                 await asyncio.sleep(0.25)
             if getattr(self.state, "_last_nova_at", 0) > _before:
@@ -2156,6 +2165,7 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
         await asyncio.sleep(0.25)
     _before = getattr(state, "_last_nova_at", 0)
     state._order_n = getattr(state, "_order_n", 0) + 1
+    state._typed_reply_pending = time.time()   # brief() holds clips while this is fresh
     logger.info(f"[ORDER] #{state._order_n} directed-reply (typed conversation): '{text[:40]}'")
     logger.info("[BRAIN] generating reply to kid input...")
     try:
@@ -2976,6 +2986,7 @@ async def entrypoint(ctx: JobContext):
             if role == "assistant" and txt:
                 state.bump("replies")
                 state._last_nova_at = time.time()   # FIX 4: silence-driver clock
+                state._typed_reply_pending = 0      # her reply landed — clips unblocked
                 logger.info(f"[SPEAK] Nova said → '{txt}'")
                 _scan_nova_line(state, txt)   # light the organ she named / open the game she called
                 # Save Nova's reply to history — multi-turn memory survives
