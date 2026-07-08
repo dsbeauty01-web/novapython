@@ -1284,19 +1284,22 @@ class TurnEngine:
         if kid_just_spoke:
             _before = getattr(self.state, "_last_nova_at", 0)
             _w0 = time.time()
-            while time.time() - _w0 < 10.0:
+            while time.time() - _w0 < 14.0:
                 # her reply LANDED (item added stamps _last_nova_at at turn end) → done
                 if (getattr(self.state, "_last_nova_at", 0) > _before
                         and not getattr(self.state, "_is_speaking", False)):
                     break
-                # FIX-TYPED-CHAT round 2 (2026-07-08 typed-only run): an EVI TEXT turn
-                # takes 2-6s to first audio — the old 2s-of-quiet heuristic fired the
-                # clip exactly as her typed reply was starting (interrupt killed it).
-                # A pending typed reply gets its full grace; voice keeps the short one.
+                # FIX-TYPED-CHAT round 3 (2026-07-08): an EVI TEXT turn can take up to
+                # ~9s to first audio (measured live) — a numeric grace kept losing the
+                # race by a second and the clip's interrupt killed her reply. Now the
+                # clip is held for as long as the typed reply is genuinely PENDING
+                # (the flag clears the moment her reply lands); voice keeps 3s.
                 _pend = getattr(self.state, "_typed_reply_pending", 0) or 0
-                _grace = 8.0 if time.time() - _pend < 12.0 else 3.0
+                if time.time() - _pend < 13.0:
+                    await asyncio.sleep(0.25)
+                    continue
                 if (not getattr(self.state, "_is_speaking", False)
-                        and time.time() - _w0 > _grace):
+                        and time.time() - _w0 > 3.0):
                     break
                 await asyncio.sleep(0.25)
             if getattr(self.state, "_last_nova_at", 0) > _before:
