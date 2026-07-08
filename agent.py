@@ -737,10 +737,51 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     w = state.vision_waiter
                     if w is not None and not w.done():
                         w.set_result(obs)
-                    # Legacy one-shot drop-in (only when NOT mid-game).
+                    # COMMERCIAL-INTRO A.3: vision is a WHISPER — her awareness,
+                    # never a turn. She weaves it in when she naturally speaks.
+                    elif _v2v_on() and getattr(state, "_evi_model", None) is not None:
+                        _whisper(state, "VISION", obs)
+                    # Legacy one-shot drop-in (non-EVI only).
                     elif not state.game_started and not state.vision_fired:
                         state.vision_fired = True
                         asyncio.create_task(_drop_in_observation(session, state, obs, agent))
+
+            elif kind == "presence":
+                # COMMERCIAL-INTRO C.3 (the air rule): the browser reports frame
+                # presence transitions. Absent → ONE soft call, then QUIET waiting
+                # (zero talking to the air). Partial signs → one more gentle try.
+                # Return → whisper a warm resume at the same beat.
+                present = bool(msg.get("present"))
+                partial = bool(msg.get("partial"))
+                was = getattr(state, "_kid_present", True)
+                state._kid_present = present
+                if not present and was:
+                    state._air_calls = 0
+                    logger.info("[AIR] nobody in frame — quiet waiting state armed")
+
+                    async def _air_call():
+                        await asyncio.sleep(4.0)   # not a blip — really gone
+                        if getattr(state, "_kid_present", True) or not state.active:
+                            return
+                        if state.ctx.phase not in ("intro", "recognition", "play"):
+                            return
+                        if getattr(state, "_air_calls", 0) >= 1:
+                            return
+                        state._air_calls = 1
+                        await _nova_say(session, "…you there, friend?")
+                        logger.info("[AIR] one soft call made → QUIET (watching)")
+                    asyncio.create_task(_air_call())
+                elif not present and partial and getattr(state, "_air_calls", 0) == 1:
+                    state._air_calls = 2
+                    logger.info("[AIR] partial signs of someone → one more gentle try")
+                    asyncio.create_task(_nova_say(session, "…you there, friend?"))
+                elif present and not was:
+                    state._air_calls = 0
+                    _beat = getattr(state, "_current_beat_name", None)
+                    _whisper(state, "EVENTS",
+                             f"they're BACK in frame — resume warmly right where you were"
+                             + (f" (beat '{_beat}')" if _beat else ""))
+                    logger.info("[AIR] person returned → warm resume whispered")
 
             # ═══ TEST BENCH HANDLERS ═══
             elif kind == "test-utter":
@@ -777,12 +818,20 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     logger.info(f"[chat] user-said: '{text[:80]}'")
                     asyncio.create_task(_user_said(session, state, agent, text))
 
-            elif kind == "clip-ack" and msg.get("ev") == "duet-pause":
-                # ONE-BEAT-ONE-MOUTH INVARIANT: a clip pausing under her live voice
-                # in a conversation beat means TWO mouths were ordered — that is the
-                # double-voice bug, and it must scream in the logs, never hide.
-                logger.error(f"[ONE-MOUTH] clip '{msg.get('id')}' paused under live EVI voice "
-                             f"(beat {msg.get('beat')}) — two mouths were ordered")
+            elif kind == "clip-ack":
+                _ev = msg.get("ev")
+                if _ev == "duet-pause":
+                    # ONE-BEAT-ONE-MOUTH INVARIANT: a clip pausing under her live voice
+                    # in a conversation beat means TWO mouths were ordered — that is the
+                    # double-voice bug, and it must scream in the logs, never hide.
+                    logger.error(f"[ONE-MOUTH] clip '{msg.get('id')}' paused under live EVI voice "
+                                 f"(beat {msg.get('beat')}) — two mouths were ordered")
+                elif _ev == "start":
+                    # dead-air detector: a playing clip IS the voice in the room
+                    state._clip_playing = True
+                elif _ev in ("end", "error", "cancelled"):
+                    state._clip_playing = False
+                    state._last_clip_end_at = time.time()
 
             elif kind == "client-log":
                 # Browser telemetry batch — print each entry so the full session
@@ -1022,15 +1071,19 @@ async def _react_to_intro_move(session: AgentSession, state: NovaSessionState,
 # EXACT joint the moment the cue line is spoken, neutral filler while
 # waiting, pre-made WOW only when the browser's detection confirms.
 # ════════════════════════════════════════════════════════════════════
+# COMMERCIAL-INTRO Part C.4 (2026-07-08): the 2-CUE LIGHT CHALLENGE is a CHAIN —
+# the second cue IS the instant reaction to the first hit ("it JUMPED to your
+# HAND!"), so a hit continues the chain instead of ending it. Every line here is
+# a pre-rendered clip (≤0.5s from detection); "wow": None = the next cue is the wow.
 INTRO_CHALLENGE = [
     {"action": "shoulder", "joint": "right_shoulder",
      "cue":    "okay… see that sparkle? can you nudge that RIGHT shoulder?",
      "filler": "let's see it… give that shoulder a little push!",
-     "wow":    "WOW — that RIGHT shoulder! that was a GOOD one!"},
+     "wow":    None},   # the hit's reward is the INSTANT jump cue below
     {"action": "left", "joint": "left_wrist",
-     "cue":    "let's try another one — raise your LEFT hand, way UP high!",
-     "filler": "go on… that LEFT hand, up to the sky!",
-     "wow":    "WOW — that LEFT hand shot UP! amazing!"},
+     "cue":    "YES!! okay okay — now look, it JUMPED to your HAND!",
+     "filler": "give that hand a little shake — go!",
+     "wow":    "you GOT it!!"},
 ]
 _CHALLENGE_CLOSE_WIN  = "ready to dance? push the big button — or say 'let's start'!"
 _CHALLENGE_CLOSE_MISS = "I LOVE that energy! ready to dance? push the big button!"
@@ -1110,6 +1163,62 @@ async def _run_intro_challenge(session: AgentSession, state: NovaSessionState,
 
 
 # ════════════════════════════════════════════════════════════════════
+# PRODUCER = WHISPERER (COMMERCIAL-INTRO-GAME, 2026-07-08, Part A).
+# The backend NEVER speaks and NEVER creates turns. It feeds her awareness
+# through the Layer-4 "RIGHT NOW" channel (Hume session_settings.context —
+# structurally turn-less, so she cannot "answer" the producer). Channels:
+# VISION / MEMORY / STAGE / EVENTS. generate_reply is BANNED in
+# conversational beats (lopo.md: 4 timeouts = 15-40s dead-air holes) —
+# when her natural flow can't cover a moment (silent kid = no turn
+# exists), an instant CLIP covers it instead.
+# ════════════════════════════════════════════════════════════════════
+def _whisper(state, channel: str, text: str) -> bool:
+    """Producer whisper → her awareness. No turn, no voice, never audible."""
+    model = getattr(state, "_evi_model", None)
+    if model is None or not _v2v_on():
+        return False
+    try:
+        ok = model.push_context(f"(RIGHT NOW — {channel}: {text})")
+        logger.info(f"[WHISPER] {channel}: {text[:100]}")
+        return bool(ok)
+    except Exception as e:
+        logger.warning(f"[WHISPER] {channel} failed: {e}")
+        return False
+
+
+async def _dead_air_watch(state):
+    """COMMERCIAL-INTRO Part A.5/E: any conversational gap >4s where the ball is
+    in NOVA's court = ERROR with cause. The kid thinking inside a listen window
+    is intentional silence (badge says Listening) — NOT dead air."""
+    fired_for = 0.0
+    while state.active and not state.game_done.is_set():
+        await asyncio.sleep(1.0)
+        if state.ctx.phase not in ("intro", "recognition", "play"):
+            continue
+        now = time.time()
+        her_last = getattr(state, "_last_nova_at", 0) or 0
+        kid_last = getattr(state, "last_kid_speech_at", 0) or 0
+        clip_end = getattr(state, "_last_clip_end_at", 0) or 0
+        last_voice = max(her_last, kid_last, clip_end)
+        if last_voice <= 0 or getattr(state, "_is_speaking", False) or getattr(state, "_clip_playing", False):
+            continue
+        gap = now - last_voice
+        if gap <= 4.0 or last_voice == fired_for:
+            continue
+        # whose court? hers if the kid acted after her last word, or a say is stuck in flight
+        say_stuck = getattr(state, "_say_inflight", None)
+        if kid_last > max(her_last, clip_end):
+            fired_for = last_voice
+            logger.error(f"[DEAD-AIR] {gap:.1f}s since kid spoke, no reply started "
+                         f"(beat={getattr(state, '_current_beat_name', '?')}, cause="
+                         f"{'EVI generation in flight' if say_stuck else 'no reply triggered'})")
+        elif say_stuck and now - say_stuck > 4.0:
+            fired_for = last_voice
+            logger.error(f"[DEAD-AIR] {gap:.1f}s — a line has been stuck in EVI for {now - say_stuck:.1f}s "
+                         f"(beat={getattr(state, '_current_beat_name', '?')})")
+
+
+# ════════════════════════════════════════════════════════════════════
 # TURN ENGINE (FIX-TURN-OWNER 2026-07-07) — THE one conversation owner.
 # BEAT = ask → (clip plays to its END; _nova_say holds the real duration)
 #        → listen window opens → inputs resolve against THIS beat only
@@ -1131,6 +1240,7 @@ class TurnEngine:
         self.beat_name = name
         self.listening = False
         self.state._current_beat = self.beat_seq
+        self.state._current_beat_name = name   # dead-air detector names the scene
         logger.info(f"[TURN] beat #{self.beat_seq} '{name}'")
         return self.beat_seq
 
@@ -1149,22 +1259,26 @@ class TurnEngine:
         await _nova_say(self.session, line)
 
     async def brief(self, goal, fallback_line):
-        """V2V STAGE 2 — DIRECTOR, NOT VENTRILOQUIST: on conversational beats the
-        engine sends EVI a BEAT BRIEF and lets her genuinely converse inside it.
-        Flag off -> today's verbatim ask."""
-        if not _v2v_on():
-            await self.ask(fallback_line)
-            return
+        """COMMERCIAL-INTRO Part A (2026-07-08): ZERO generate_reply in
+        conversational beats — that path caused the 15-40s dead-air holes
+        (4 timeouts in lopo.md). The producer WHISPERS the beat goal (no turn);
+        if the kid just spoke, her own V2V reply carries the beat. A silent kid
+        means no turn exists, so an instant CLIP covers the moment instead."""
         model = getattr(self.state, "_evi_model", None)
-        if model is None:
+        if not _v2v_on() or model is None:
             await self.ask(fallback_line)
             return
+        _whisper(self.state, "STAGE", f"beat '{self.beat_name}' — {goal}")
         # ONE MOUTH (2026-07-07 live run): when the previous beat was resolved by
-        # her OWN hearing, EVI is already answering the kid — firing this brief's
-        # generation on top was the "she spoke twice" bug. Let her natural reply
-        # start and finish first (min 2s for it to begin, done = 1.8s quiet, cap 10s).
+        # her OWN hearing, EVI is already answering the kid — the whisper rides
+        # that reply. Wait for it to land (begin ≥2s, done = 1.8s quiet, cap 10s).
         _res = getattr(self, "_last_resolution", None)
-        if _res is not None and _res[0] == "stt" and time.time() - _res[1] < 6.0:
+        kid_just_spoke = (
+            (_res is not None and _res[0] == "stt" and time.time() - _res[1] < 6.0)
+            or time.time() - (getattr(self.state, "last_kid_speech_at", 0) or 0) < 3.0
+        )
+        if kid_just_spoke:
+            _before = getattr(self.state, "_last_nova_at", 0)
             _w0 = time.time()
             while time.time() - _w0 < 10.0:
                 _quiet = time.time() - getattr(self.state, "_last_nova_at", 0)
@@ -1172,23 +1286,12 @@ class TurnEngine:
                         and _quiet > 1.8 and time.time() - _w0 > 2.0):
                     break
                 await asyncio.sleep(0.25)
-            logger.info(f"[TURN] her own reply landed first — brief '{self.beat_name}' follows (one mouth)")
-        try:
-            model.push_context(f"(BEAT '{self.beat_name}': {goal})")
-        except Exception:
-            pass
-        logger.info(f"[TURN] brief sent for beat '{self.beat_name}': {goal[:60]}")
-        _before = getattr(self.state, "_last_nova_at", 0)
-        try:
-            await self.session.generate_reply(user_input=f"(begin this beat now: {goal})")
-        except Exception as e:
-            logger.warning(f"[TURN] brief generate failed → fallback line: {e}")
-            await self.ask(fallback_line)
-            return
-        # wait until her line lands (cap 12s) so the listen window opens after speech
-        _t0 = time.time()
-        while getattr(self.state, "_last_nova_at", 0) <= _before and time.time() - _t0 < 12.0:
-            await asyncio.sleep(0.25)
+            if getattr(self.state, "_last_nova_at", 0) > _before:
+                logger.info(f"[TURN] beat '{self.beat_name}' carried by her OWN reply (V2V — no clip needed)")
+                return
+        # No turn to ride → the clip is the mouth (instant, no generation, no dead air)
+        logger.info(f"[TURN] beat '{self.beat_name}' — silent kid, clip covers it")
+        await self.ask(fallback_line)
 
     def offer(self, kind, val):
         """ALL inputs enter here (typed / stt / detection / button).
@@ -1279,7 +1382,10 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
         await asyncio.sleep(0.3)
     await asyncio.sleep(0.4)
 
-    # ── BEAT: name ──
+    # ── BEAT: name + mirror (COMMERCIAL-INTRO C.2/C.3 — pure V2V, air rules) ──
+    # Kid answers → EVI heard the real audio and responds HERSELF (mirror).
+    # Silence → ONE natural retry (~7s), ONE more, gentler (~8s), then "friend"
+    # and she moves ON. The producer only LISTENS to advance (A.4) and whispers.
     def m_name(kind, val):
         if kind in ("typed", "stt"):
             nm = _extract_name(str(val))
@@ -1288,15 +1394,23 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
     name = None
     kind = None
     if not state.ctx.name:
-        kind, r = await eng.listen(m_name, 14.0)
+        kind, r = await eng.listen(m_name, 7.0)
         if kind in ("typed", "stt"):
             name = r
-        elif kind is None:
+        if not name and kind is None:
             eng.new_beat("name_retry")
             await eng.cancel_stale()
             await eng.brief("gently ask their name ONE more time, one short warm line",
                             "what's your name, friend?")
-            kind, r = await eng.listen(m_name, 9.0)
+            kind, r = await eng.listen(m_name, 8.0)
+            if kind in ("typed", "stt"):
+                name = r
+        if not name and kind is None:
+            eng.new_beat("name_retry2")
+            await eng.cancel_stale()
+            await eng.brief("one LAST, even gentler ask for their name — tiny and warm",
+                            "it's okay — just your name, nice and loud!")
+            kind, r = await eng.listen(m_name, 8.0)
             if kind in ("typed", "stt"):
                 name = r
         if name:
@@ -1306,8 +1420,10 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
             except Exception:
                 pass
             logger.info(f"[TURN] name captured: {name}")
-            if kind == "typed":   # voice path: EVI already replied naturally
-                await eng.ask(f"{name}! hi {name} — love it!")
+            # A.4: producer LISTENS and silently arms the next stage — never intercepts
+            _whisper(state, "MEMORY", f"their name is {name} — got it, the name talk is done forever")
+        else:
+            _whisper(state, "MEMORY", "no name given — call them 'friend', warm as ever, and NEVER re-ask")
     else:
         name = state.ctx.name
 
@@ -1322,15 +1438,25 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
         return None
     await eng.listen(m_yes, 8.0)   # yes → straight in; timeout → she leads anyway
 
-    # ── BEATS: the movement challenge (ask ENDS → light + detection arm → listen) ──
+    # ── BEATS: the 2-CUE LIGHT CHALLENGE (COMMERCIAL-INTRO C.4 — a CHAIN):
+    # cue → hit → INSTANT next cue ("it JUMPED to your HAND!") → hit → praise →
+    # one live V2V beat (whispered details, her own words). Misses: one warm
+    # retry → warm move-on. Zero fail-feel, ≤0.5s from detection to clip.
     hit = False
+    chain_full = True
     state._challenge_ran = True   # legacy paths stay quiet
     for mv in INTRO_CHALLENGE:
         if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
+            chain_full = False
             break
         eng.new_beat("challenge_" + mv["action"])
         await eng.cancel_stale()
         state._challenge_active = mv["action"]
+        _det_t = getattr(eng, "_last_resolution", None)
+        if hit and _det_t is not None:   # E: detection → next clip budget 500ms
+            _lat = (time.time() - _det_t[1]) * 1000
+            logger.info(f"[LAT-CLIP] detection → jump cue {int(_lat)}ms (budget 500ms)"
+                        + ("" if _lat <= 500 else " — OVER BUDGET"))
         await eng.ask(mv["cue"])
         try:   # arm at ask END (spec §4) — a WOW can never fire mid-ask
             await room.local_participant.publish_data(
@@ -1343,18 +1469,31 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
         want = mv["action"]
         def m_move(kind3, val3, _want=want):
             return "hit" if (kind3 == "detection" and str(val3).lower() == _want) else None
-        _k, r3 = await eng.listen(m_move, 6.0)
+        _k, r3 = await eng.listen(m_move, 7.0)
         if r3 != "hit":
             await eng.ask(mv["filler"])
-            _k, r3 = await eng.listen(m_move, 5.0)
+            _k, r3 = await eng.listen(m_move, 7.0)
         state._challenge_active = None
         if r3 == "hit":
-            await eng.ask(mv["wow"])
             hit = True
-            break
+            if mv["wow"]:   # chain end — the praise clip, then the live V2V beat
+                await eng.ask(mv["wow"])
+        else:
+            chain_full = False
+            break   # miss → warm move-on close (never fail-feel, never blame)
     seen = getattr(state, "_intro_moves_reacted", None) or set()
     seen.add("scripted")
     state._intro_moves_reacted = seen
+    # C.4.d — the live soul: whisper the details; her natural voice reacts in her
+    # own words the moment the kid gives her a turn. Detection shaky → no commentary.
+    if hit:
+        _whisper(state, "VISION",
+                 ("they nailed the WHOLE light chain — the shoulder nudge AND the hand move, clean. "
+                  if chain_full else "they nailed the shoulder nudge. ")
+                 + "when they next speak, react to THAT in your own words — specific, delighted")
+    else:
+        _whisper(state, "VISION", "the light challenge ended without a clean detection — "
+                 "NEVER mention it or blame them; pure energy, straight to the dance")
 
     # ── BEAT: play invite — she offers, then GENUINELY WAITS (never ask-and-do) ──
     if state.ctx.phase in ("intro", "recognition") and not state.game_done.is_set():
@@ -1662,27 +1801,51 @@ async def _handle_dance_mic_text(session: AgentSession, state: NovaSessionState,
                             {"event": "mic_text", "text": text}, gate)
 
 
+# COMMERCIAL-INTRO Part D (2026-07-08): the transition bridge. The producer
+# WHISPERS the load state so she's aware of the machinery (never names it);
+# her V2V rides any kid turn. When the kid is silent (a silent button tap has
+# no turn), instant CLIPS cover the bridge beats — never a live generation.
+_BRIDGE_CLIPS = {
+    # song key 'joined' is kid-named "Up Groove" (legacy id) — spec Part B pitch
+    ("hype", "hello"):  "Hello Hello?! YES — the song literally tells you what to do!",
+    ("hype", "joined"): "Up Groove?! YES — we wake your body up, part by part!",
+    ("hype", "freeze"): "Freeze Dance?! YES — when the music stops, you FREEZE!",
+    ("hype", "wave"):   "Wave?! YES — the magic light travels up your whole body!",
+    ("tip", None):      "when the light glows — that's me!",
+    ("framing", None):  "step back so I can see ALL of you!",
+    # 'framed' is a whisper-only beat: the GO-BEAT fires once, at phase:dance
+    ("fail", None):     "hmm, that one's being shy! pick another!",
+}
+
+
+def _bridge_clip_line(beat, song):
+    line = _BRIDGE_CLIPS.get((beat, (song or "").strip() or None))
+    if line is None:
+        line = _BRIDGE_CLIPS.get((beat, None))
+    return line
+
+
 async def _speak_bridge(session: AgentSession, state: NovaSessionState, agent: "NovaAgent",
                         beat: Optional[str], song: Optional[str]):
-    """PHASE 2 TRANSITION — speak ONE bridge beat the browser asked for.
-    The browser owns the budget + ready-gate, so we NEVER queue ahead: one beat,
-    one line, spoken now. Unknown/empty beats stay silent (captions still carry it)."""
-    line = personality.transition_line(beat, song, state.ctx.name)
+    """PHASE 2 TRANSITION — ONE bridge beat the browser asked for. The browser
+    owns the budget + ready-gate. Part D: whisper the stage, clip the voice."""
+    _whisper(state, "STAGE",
+             f"the game '{song or '?'}' — bridge beat '{beat}': it's getting the music ready; "
+             "stay hyped, no tech words, max one short line if they speak")
+    line = _bridge_clip_line(beat, song)
     if not line:
-        logger.info(f"[bridge] {beat}/{song} → (no line, staying silent)")
+        logger.info(f"[bridge] {beat}/{song} → (whisper only, no voice)")
         return
     await state.pace.acquire()
-    await _nova_say(session, line)
-    logger.info(f"[bridge] {beat}/{song} → '{line}'")
+    await _nova_say(session, line)   # exact manifest text → instant clip, no generation
+    logger.info(f"[bridge] {beat}/{song} → clip '{line}'")
 
 
 async def _speak_dance_intro(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
-    """Phase transitioned to dance — the GO-LINE, final beat of the transition.
-    ONE hype line; the browser starts the MP4 the moment she begins speaking it."""
-    import random
+    """Phase transitioned to dance — the GO-BEAT (Part D.3), a timed game moment:
+    one instant clip; the browser starts the song the moment it begins."""
     await state.pace.acquire()
-    line = random.choice(["okay — here we GO!", "here we go!", "ready? GO!", "let's DANCE!", "show me what you got!"])
-    await _nova_say(session, line)
+    await _nova_say(session, "here we GO!")
 
 
 async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: "NovaAgent"):
@@ -1927,15 +2090,20 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
         return
 
     # ── TURN-OWNER: typed inputs go to the ONE engine, resolved against the
-    # current beat only. Consumed → the beat speaks the resolution and we stop.
-    # Not consumed → this is real conversation; EVI replies below.
+    # current beat only. Consumed → the beat advances silently; on NAME beats the
+    # text still flows to EVI below (COMMERCIAL-INTRO C.2 — a typed name is a real
+    # kid turn and SHE does the mirror, not a script). Other consumed beats stop
+    # here: their clips are the mouth (one beat = one mouth).
     _eng = getattr(state, "_turn_engine", None)
     if _eng is not None and _eng.offer("typed", text):
         try:
             memory.store.add_message(state.kid_id, "user", text)
         except Exception:
             pass
-        return
+        if (getattr(_eng, "beat_name", "") or "").startswith(("greet", "name")) and _v2v_on():
+            logger.info("[chat] typed name consumed by beat → still forwarded to EVI (her mirror)")
+        else:
+            return
 
     # Persistent message history — survives across sessions if Postgres on
     try:
@@ -2049,6 +2217,11 @@ async def _idle_watch_loop(session: AgentSession, state: NovaSessionState):
 
         # Never nudge while Nova is mid-speech, or during goodbye wrap-up edge
         if state.pace._is_speaking:
+            continue
+
+        # COMMERCIAL-INTRO C.3 (the air rule): nobody in frame = QUIET waiting
+        # state. Zero talking to the air — the presence handler owns that beat.
+        if not getattr(state, "_kid_present", True):
             continue
 
         now = time.time()
@@ -2670,6 +2843,15 @@ async def entrypoint(ctx: JobContext):
                 # the utterance as a done/yes signal so the loop can react.
                 state.last_kid_text = text
                 state.last_kid_speech_at = time.time()
+                state._lat_kid_final_at = time.time()   # E: reply-latency start mark
+                # C.2 STT-ECHO (Lexi steal): the browser shows "Nova heard: …" so
+                # truncations are visible instead of silently rolled past.
+                try:
+                    asyncio.create_task(ctx.room.local_participant.publish_data(
+                        json.dumps({"kind": "stt-echo", "text": text[:120]}).encode("utf-8"),
+                        reliable=True))
+                except Exception:
+                    pass
                 # Capture the name SYNCHRONOUSLY here (before the brain auto-replies)
                 # so the very next reply uses the name + play-invite persona — fixes
                 # the race where Nova asked for the name again.
@@ -2727,6 +2909,30 @@ async def entrypoint(ctx: JobContext):
             speaking = (new_state == "speaking")
             state._is_speaking = speaking   # mute-guard checks this (text lands later than audio)
             state.pace.mark_speaking(speaking)
+            # COMMERCIAL-INTRO Part E: reply latency = kid's final transcript → her
+            # audio starts. Target ≤1.5s, hard ceiling 3s (ERROR above it).
+            if speaking:
+                _mark = getattr(state, "_lat_kid_final_at", None)
+                if _mark:
+                    state._lat_kid_final_at = None
+                    _dt = time.time() - _mark
+                    if _dt <= 3.0:
+                        logger.info(f"[LAT] reply {_dt:.2f}s (target 1.5s)")
+                    else:
+                        logger.error(f"[LAT] reply {_dt:.2f}s — OVER the 3s ceiling")
+            # Part D.5 state badge: Watching / Listening / Talking / Thinking —
+            # silence must always read as intentional on screen.
+            _badge = {"speaking": "talking", "listening": "listening",
+                      "thinking": "thinking"}.get(str(new_state or ""), None)
+            if not getattr(state, "_kid_present", True):
+                _badge = "watching"
+            if _badge:
+                try:
+                    asyncio.create_task(ctx.room.local_participant.publish_data(
+                        json.dumps({"kind": "badge", "s": _badge}).encode("utf-8"),
+                        reliable=True))
+                except Exception:
+                    pass
     except Exception as e:
         logger.warning(f"[hook] agent_state_changed unavailable: {e}")
 
@@ -2894,6 +3100,8 @@ async def entrypoint(ctx: JobContext):
         asyncio.create_task(_vision_trigger_loop(ctx.room, state))
         # Gentle idle engagement — soft presence if the child goes quiet
         asyncio.create_task(_idle_watch_loop(session, state))
+        # COMMERCIAL-INTRO Part A.5/E: dead air >4s in her court = ERROR, named cause
+        asyncio.create_task(_dead_air_watch(state))
 
     # Per-session AUTO-SUMMARY: logged once when the session tears down, so EVERY
     # session self-reports its headline metrics into the log stream (option A).

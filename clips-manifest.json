@@ -370,5 +370,57 @@
  "move_invite": {
   "text": "ready to make a move?",
   "dur": 1.51
+ },
+ "name_retry2": {
+  "text": "it's okay — just your name, nice and loud!",
+  "dur": 3.75
+ },
+ "ch_hand_jump": {
+  "text": "YES!! okay okay — now look, it JUMPED to your HAND!",
+  "dur": 2.91
+ },
+ "ch_hand_filler": {
+  "text": "give that hand a little shake — go!",
+  "dur": 3.31
+ },
+ "ch_hand_wow": {
+  "text": "you GOT it!!",
+  "dur": 1.47
+ },
+ "air_you_there": {
+  "text": "…you there, friend?",
+  "dur": 1.51
+ },
+ "br_hype_hello": {
+  "text": "Hello Hello?! YES — the song literally tells you what to do!",
+  "dur": 4.27
+ },
+ "br_hype_joined": {
+  "text": "Up Groove?! YES — we wake your body up, part by part!",
+  "dur": 3.63
+ },
+ "br_hype_freeze": {
+  "text": "Freeze Dance?! YES — when the music stops, you FREEZE!",
+  "dur": 4.37
+ },
+ "br_hype_wave": {
+  "text": "Wave?! YES — the magic light travels up your whole body!",
+  "dur": 4.15
+ },
+ "br_tip": {
+  "text": "when the light glows — that's me!",
+  "dur": 2.23
+ },
+ "br_framing": {
+  "text": "step back so I can see ALL of you!",
+  "dur": 2.75
+ },
+ "go_beat": {
+  "text": "here we GO!",
+  "dur": 2.19
+ },
+ "load_shy": {
+  "text": "hmm, that one's being shy! pick another!",
+  "dur": 3.63
  }
 }
