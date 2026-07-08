@@ -1272,9 +1272,13 @@ class TurnEngine:
         # ONE MOUTH (2026-07-07 live run): when the previous beat was resolved by
         # her OWN hearing, EVI is already answering the kid — the whisper rides
         # that reply. Wait for it to land (begin ≥2s, done = 1.8s quiet, cap 10s).
+        # FIX-TYPED-CHAT (2026-07-08): typed = spoken, ONE pipeline. A beat resolved
+        # by TYPED text is a real kid turn exactly like voice — the next beat's clip
+        # must NOT fire over her in-flight reply (it interrupted + mouth-held the
+        # typed-name mirror: the "she never replies to text" bug).
         _res = getattr(self, "_last_resolution", None)
         kid_just_spoke = (
-            (_res is not None and _res[0] == "stt" and time.time() - _res[1] < 6.0)
+            (_res is not None and _res[0] in ("stt", "typed") and time.time() - _res[1] < 6.0)
             or time.time() - (getattr(self.state, "last_kid_speech_at", 0) or 0) < 3.0
         )
         if kid_just_spoke:
@@ -2080,6 +2084,19 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     # Update live context so next prompt build has the kid's words +
     # knowledge.py can detect topic mentions (colors, animals, foods)
     state.ctx.last_kid_text = text
+    # FIX-TYPED-CHAT: typed = spoken, one pipeline — typing counts as the kid's
+    # voice everywhere (brief's turn-gap, dead-air court, filler guards)...
+    state.last_kid_speech_at = time.time()
+    state._lat_kid_final_at = time.time()   # ...and the reply-latency meter
+    # ...and the STT-echo bubble speaks one visual language for both inputs
+    try:
+        _room = getattr(state, "room", None)
+        if _room is not None:
+            asyncio.create_task(_room.local_participant.publish_data(
+                json.dumps({"kind": "stt-echo", "text": text[:120]}).encode("utf-8"),
+                reliable=True))
+    except Exception:
+        pass
 
     # PHASE 3: mid-song typed text routes through the gate too (question →
     # one quick line, story → tiny sound + after-song continuity). Never a
@@ -2128,10 +2145,13 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     await agent.refresh_instructions()
     # TYPED-REPLY FIX (2026-07-06 live): EVI SWALLOWS a text user_input that lands while
     # SHE is speaking — [HEAR] confirmed the text arrived, but no assistant turn ever
-    # started (typed chat felt dead). Wait for her current line to finish (cap 8s)
-    # before sending, and if no reply begins within 5s, resend the text once.
+    # started (typed chat felt dead). FIX-TYPED-CHAT (2026-07-08): a playing CLIP is her
+    # audio too — a user_input sent mid-clip gets its reply suppressed by the one-mouth
+    # guard (clip-owned beat) and dies. Barge-in rule: queue until her line-end (cap 8s),
+    # and if no reply begins within 5s, resend the text once.
     for _ in range(32):
-        if not getattr(state, "_is_speaking", False):
+        if (not getattr(state, "_is_speaking", False)
+                and not getattr(state, "_clip_playing", False)):
             break
         await asyncio.sleep(0.25)
     _before = getattr(state, "_last_nova_at", 0)
@@ -2147,6 +2167,14 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     async def _ensure_reply():
         await asyncio.sleep(5.0)
         if getattr(state, "_last_nova_at", 0) <= _before and state.active and not state.game_done.is_set():
+            # barge-in rule holds for the retry too: never resend INTO her audio
+            for _ in range(20):
+                if (not getattr(state, "_is_speaking", False)
+                        and not getattr(state, "_clip_playing", False)):
+                    break
+                await asyncio.sleep(0.25)
+            if getattr(state, "_last_nova_at", 0) > _before:
+                return   # her reply landed while we waited — done
             logger.info(f"[BRAIN] typed text got NO reply in 5s → resending once: '{text[:40]}'")
             try:
                 await session.generate_reply(user_input=text)
