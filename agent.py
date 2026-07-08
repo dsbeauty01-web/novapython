@@ -2171,8 +2171,15 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     state._typed_reply_pending = time.time()   # brief() holds clips while this is fresh
     logger.info(f"[ORDER] #{state._order_n} directed-reply (typed conversation): '{text[:40]}'")
     logger.info("[BRAIN] generating reply to kid input...")
+    # FIX-TYPED-CHAT (2026-07-08): send the text STRAIGHT to EVI as a user turn.
+    # The framework hop (AgentSession.generate_reply(user_input=…)) silently
+    # dropped it — wire diagnostics showed no user_input ever left the worker.
+    _model = getattr(state, "_evi_model", None)
     try:
-        await session.generate_reply(user_input=text)
+        if _model is not None and _v2v_on() and hasattr(_model, "send_user_text"):
+            _model.send_user_text(text)
+        else:
+            await session.generate_reply(user_input=text)
         logger.info(f"[BRAIN] reply call returned for: '{text[:40]}'")
     except Exception as e:
         logger.exception(f"[BRAIN] generate_reply FAILED for kid input: {e}")
@@ -2190,7 +2197,10 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
                 return   # her reply landed while we waited — done
             logger.info(f"[BRAIN] typed text got NO reply in 5s → resending once: '{text[:40]}'")
             try:
-                await session.generate_reply(user_input=text)
+                if _model is not None and _v2v_on() and hasattr(_model, "send_user_text"):
+                    _model.send_user_text(text)
+                else:
+                    await session.generate_reply(user_input=text)
             except Exception as e2:
                 logger.warning(f"[BRAIN] typed-text resend failed: {e2}")
     asyncio.create_task(_ensure_reply())

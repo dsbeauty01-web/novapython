@@ -230,6 +230,22 @@ class HumeEVIRealtimeModel(RealtimeModel):
         logger.info(f"[REVEAL] fire_greeting → sent={fired}{' (retry)' if retry else ''}")
         return fired
 
+    def send_user_text(self, text: str) -> bool:
+        """FIX-TYPED-CHAT (2026-07-08): typed chat = a real kid turn, sent STRAIGHT
+        to EVI as user_input (the AgentSession.generate_reply(user_input=…) hop was
+        silently dropping it — wire logs showed no send, no echo). Her natural reply
+        flows back through the normal generation plumbing; the user_message echo
+        re-licenses the mouth exactly like a spoken line."""
+        ok = False
+        for sess in list(self._sessions):
+            try:
+                sess._send({"type": "user_input", "text": text})
+                ok = True
+            except Exception:
+                logger.exception("send_user_text: send failed")
+        logger.info(f"[EVI->] user_input sent direct: '{text[:60]}' (ok={ok})")
+        return ok
+
     def push_context(self, text: str) -> bool:
         """CONTEXT SYNC (2026-07-06): clip lines play in the BROWSER and never enter
         EVI's chat — her brain didn't know what 'she' just said, so replies felt
