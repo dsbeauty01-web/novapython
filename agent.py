@@ -378,10 +378,8 @@ class NovaSessionState:
                 # V2V STAGES 1+5: the ears door follows the phase — open for
                 # conversation, CLOSED the moment a song plays (she must never
                 # listen to the music), open again for the goodbye.
-                _m = getattr(self, "_evi_model", None)
-                if _m is not None:
-                    _m._ears_open = new_phase in ("recognition", "goodbye")
-                    logger.info(f"[EARS] door {'OPEN' if _m._ears_open else 'CLOSED'} (phase {new_phase})")
+                # STAGE 2: routed through the ear OWNER (phase is one of its inputs)
+                _ear_update(self, f"phase → {new_phase}")
                 # REAL-TIME AWARENESS (2026-07-06): her brain learns the phase changed
                 # THE INSTANT it happens — no more finishing old-phase thoughts late.
                 _model = getattr(self, "_evi_model", None)
@@ -902,8 +900,8 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     # V2V: the ears open HERE — the reveal is the start of the
                     # conversation; anything the mic caught before it is not a turn.
                     if llm_obj is not None and _v2v_on():
-                        llm_obj._ears_open = True
-                        logger.info("[EARS] door OPEN (reveal — conversation starts)")
+                        state._revealed = True   # STAGE 2: owner input — conversation starts
+                        _ear_update(state, "reveal — conversation starts")
                     # CLIP GREETING (root fix): first meetings get the pre-rendered hello
                     # INSTANTLY (the 25-45s cold gen was the single worst latency wart).
                     # Returning kids keep the live EVI greet (deposit opener needs her brain).
@@ -1007,6 +1005,42 @@ def _mouth_gate(state, reason: str) -> bool:
     return True
 
 
+def _ear_should_be_open(state) -> bool:
+    """STAGE 2 (FIX-EVERYTHING): THE ear owner — the ONLY decision point.
+    Inputs: reveal happened · clip playing · her audio ACTUALLY playing
+    (playback clock) · post-playback tail-hold · phase (song = closed)."""
+    if not getattr(state, "_revealed", False):
+        return False
+    if _audio_playing(state):
+        return False
+    if getattr(state, "_ear_tail_until", 0.0) > time.time():
+        return False
+    return getattr(state.ctx, "phase", "intro") in ("intro", "recognition", "goodbye")
+
+
+def _ear_update(state, reason: str) -> None:
+    """Apply the owner's verdict. NOTHING else may write _ears_open."""
+    _m = getattr(state, "_evi_model", None)
+    if _m is None:
+        return
+    want = _ear_should_be_open(state)
+    if bool(getattr(_m, "_ears_open", False)) != want:
+        _m._ears_open = want
+        logger.info(f"[EAR] {'open' if want else 'closed'} ← {reason}")
+
+
+def _ear_tail_hold(state, reason: str, tail: float = 0.7) -> None:
+    """Her audio just STOPPED playing — ear stays closed +tail s (room echo
+    dies), then the owner re-decides."""
+    state._ear_tail_until = time.time() + tail
+    _ear_update(state, f"{reason} → tail-hold {tail}s")
+
+    async def _reopen():
+        await asyncio.sleep(tail + 0.05)
+        _ear_update(state, f"{reason} → tail elapsed")
+    asyncio.create_task(_reopen())
+
+
 async def _wait_playback_end(state, grace: float = 0.3, cap: float = 25.0):
     """Block until her CURRENT audio truly finished playing (+grace tail).
     The one clock: playback-end, never generation-done."""
@@ -1032,7 +1066,19 @@ async def _nova_say(session: AgentSession, line: str):
     if not line:
         return False
     st = getattr(session, "_nova_state", None)
+    # STAGE 3 (FIX-EVERYTHING, Decision A — avatar-first speech): face on →
+    # EVERY spoken line goes LIVE through the avatar so lips move on everything
+    # (and the voice is ONE voice). Clips remain the mouth for: voice-only
+    # sessions (?voiceonly / no avatar) and the GAME phase (face hidden there —
+    # talk-scores and instant cues untouched). NOVA_AVATAR_LIVE_LINES=0 reverts.
+    _avatar_live = bool(st is not None
+                        and getattr(st, "_avatar_on", False)
+                        and os.getenv("NOVA_AVATAR_LIVE_LINES", "1") == "1"
+                        and getattr(st.ctx, "phase", "intro") != "dance")
     hit = _CLIP_INDEX.get(line.strip()) if os.getenv("NOVA_CLIPS", "1") == "1" else None
+    if _avatar_live and hit:
+        logger.info(f"[LIPS] clip '{hit[0]}' → LIVE line (avatar-first)")
+        hit = None
     cid, cdur = (hit if hit else (None, 0.0))
     if cid and st is not None and getattr(st, "room", None) is not None:
         try:
@@ -1043,12 +1089,12 @@ async def _nova_say(session: AgentSession, line: str):
             # first (one mouth). Door restores to the phase's base state afterwards.
             _model = getattr(st, "_evi_model", None)
             if _model is not None and _v2v_on():
-                _model._ears_open = False
                 # ONE BEAT = ONE MOUTH: this beat is clip-owned — EVI generation is
                 # HELD until the clip ends AND kid input arrives (or the worker
                 # explicitly orders her next line). Suppression enforced in the bridge.
                 _model._mouth_hold = True
                 _model._clip_playing = True
+                _ear_update(st, "clip ▶")   # STAGE 2: owner sees clip-playing → closed
                 try:
                     _r = session.interrupt()
                     if asyncio.iscoroutine(_r):
@@ -1076,9 +1122,7 @@ async def _nova_say(session: AgentSession, line: str):
             st._last_nova_at = time.time()
             if _model is not None and _v2v_on():
                 _model._clip_playing = False
-                _open = getattr(st.ctx, "phase", "intro") in ("intro", "recognition", "goodbye")
-                _model._ears_open = _open
-                logger.info(f"[EARS] clip done → door {'OPEN' if _open else 'CLOSED'} (phase {getattr(st.ctx, 'phase', '?')})")
+                _ear_tail_hold(st, "clip ended")   # STAGE 2: +0.7s echo tail, then owner decides
             return True
         except Exception as e:
             logger.warning(f"[CLIP] publish failed → EVI fallback: {e}")
@@ -3159,20 +3203,15 @@ async def entrypoint(ctx: JobContext):
             speaking = (new_state == "speaking")
             state._is_speaking = speaking   # mute-guard checks this (text lands later than audio)
             state.pace.mark_speaking(speaking)
-            # STAGE 2.1 (2026-07-09): SHE MUST NEVER HEAR HERSELF. The clip path
-            # already closes the Gemini door; her LIVE voice did not — echo of her
-            # own line came back through the kid's mic and she answered herself.
-            # Door CLOSED while she speaks, restored to the phase's base state
-            # after (same rule as the post-clip restore). Gemini path only — Hume
-            # EVI is one S2S socket and handles its own echo.
-            if _gemini_on():
-                _vm = getattr(state, "_evi_model", None)
-                if _vm is not None and _v2v_on():
-                    if speaking:
-                        _vm._ears_open = False
-                    elif not getattr(_vm, "_clip_playing", False):
-                        _vm._ears_open = (getattr(state.ctx, "phase", "intro")
-                                          in ("intro", "recognition", "goodbye"))
+            # STAGE 2: SHE MUST NEVER HEAR HERSELF — her live voice runs through
+            # the ear OWNER like everything else. Speaking → closed (owner sees
+            # _is_speaking); stopped → +0.7s echo tail, then the owner decides.
+            # Gemini path only — Hume EVI is one S2S socket, handles its own echo.
+            if _gemini_on() and _v2v_on():
+                if speaking:
+                    _ear_update(state, "her voice playing")
+                else:
+                    _ear_tail_hold(state, "her voice ended")
             # COMMERCIAL-INTRO Part E: reply latency = kid's final transcript → her
             # audio starts. Target ≤1.5s, hard ceiling 3s (ERROR above it).
             if speaking:
@@ -3254,6 +3293,7 @@ async def entrypoint(ctx: JobContext):
             # BOUNDED like Runway: a hanging start sits BEFORE session.start and
             # would boot her voice late too. 20s (start includes an HTTP call).
             await asyncio.wait_for(lemon_avatar.start(session, room=ctx.room), timeout=20.0)
+            state._avatar_on = True   # STAGE 3: face on → every line live (lips move)
             logger.info("[nova-v207] step 2: LemonSlice avatar started "
                         f"(agent {os.getenv('NOVA_LEMON_AGENT_ID', 'agent_0a645f26d6d77246')[:18]})")
         except Exception as e:
