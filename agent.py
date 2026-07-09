@@ -632,6 +632,14 @@ class NovaAgent(Agent):
 def register_data_handler(room: rtc.Room, state: NovaSessionState, session: AgentSession, agent: "NovaAgent"):
     """Listen for game events from the browser."""
     state.room = room   # so _push_to_game can send go-picker to the browser
+    # VOICE-SILENCE DEBUG (2026-07-09): let the voice adapter announce its
+    # generation lifecycle (gen-start / gen-done / gen-error) into the room
+    _vm = getattr(state, "_evi_model", None)
+    if _vm is not None and hasattr(_vm, "_announce"):
+        def _diag_announce(payload):
+            asyncio.create_task(room.local_participant.publish_data(
+                json.dumps(payload).encode("utf-8"), reliable=True))
+        _vm._announce = _diag_announce
     if _v2v_on():
         async def _announce_v2v():
             await asyncio.sleep(1.0)

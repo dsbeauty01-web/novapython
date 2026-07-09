@@ -34,6 +34,9 @@ class GeminiVoiceAdapter:
         self._clip_playing = False
         self.__ears_open = False
         self._ctx_notes: list[str] = []     # whispers ride the next generation
+        self.last_error = None
+        self._inflight = 0                  # generate_reply calls still awaiting
+        self._announce = None               # set by agent.py — publishes diag into the room
 
     def bind(self, session) -> None:
         self._session = session
@@ -73,6 +76,17 @@ class GeminiVoiceAdapter:
         notes, self._ctx_notes = self._ctx_notes, []
         return " ".join(notes)
 
+    def _diag(self, ev: str, **fields) -> None:
+        """VOICE-SILENCE DEBUG (2026-07-09): announce generation lifecycle into
+        the room so an external probe sees where a reply stalls."""
+        logger.info(f"[gemini-diag] {ev} {fields}")
+        cb = self._announce
+        if cb is not None:
+            try:
+                cb({"kind": "gemini-diag", "ev": ev, **fields})
+            except Exception:
+                pass
+
     # ── MOUTH ──
     def fire_greeting(self, retry: bool = False) -> bool:
         if self._greet_fired and not retry:
@@ -102,15 +116,24 @@ class GeminiVoiceAdapter:
             kwargs["instructions"] = f"(your own awareness right now, never read aloud: {notes})"
 
         async def _go():
+            import time as _t
+            t0 = _t.time()
+            self._inflight += 1
+            self._diag("gen-start", text=user_input[:50], inflight=self._inflight)
             try:
                 await s.generate_reply(**kwargs)
                 self.last_error = None
+                self._diag("gen-done", text=user_input[:50], elapsed=round(_t.time() - t0, 2))
             except Exception as e:
                 # VOICE-SILENCE DEBUG (2026-07-09): keep the failure text so the
                 # worker can announce it into the room (Render logs are the only
                 # other place this lands, and they're often out of reach)
                 self.last_error = f"{type(e).__name__}: {e}"
+                self._diag("gen-error", text=user_input[:50], err=self.last_error[:200],
+                           elapsed=round(_t.time() - t0, 2))
                 logger.exception("[gemini] generate_reply failed")
+            finally:
+                self._inflight -= 1
         asyncio.create_task(_go())
         logger.info(f"[EVI->] gemini user turn: '{user_input[:60]}'"
                     + (" (+awareness notes)" if notes else ""))
