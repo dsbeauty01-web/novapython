@@ -670,7 +670,7 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 "gemini_key_fp": _fp(os.getenv("GEMINI_API_KEY")),
                 "google_key_fp": _fp(os.getenv("GOOGLE_API_KEY")),
                 "hume_key_set": bool(os.getenv("HUME_API_KEY")),
-                "lemon_key_set": bool(os.getenv("LEMONSLICE_API_KEY")),
+                "lemon_key_set": bool(_lemon_key()),
                 "avatar_pick": os.getenv("NOVA_AVATAR", "lemonslice"),
             }).encode("utf-8"), reliable=True)
         except Exception:
@@ -1604,6 +1604,15 @@ def _gemini_on() -> bool:
     # Live (Hume credits ran out mid-test, user call: "use it, it's ok for now").
     # Takes precedence over EVI when set; flip back to Hume by unsetting it.
     return os.getenv("USE_GEMINI", "").lower() in ("1", "true", "yes", "on")
+
+
+def _lemon_key() -> str | None:
+    # STAGE 1 (2026-07-09): the key landed on the Render worker named
+    # "lemonsilce" (typo). Accept every spelling seen so the env never needs
+    # touching again; the canonical name still wins when present.
+    return (os.getenv("LEMONSLICE_API_KEY") or os.getenv("LEMONSILCE_API_KEY")
+            or os.getenv("lemonsilce") or os.getenv("LEMONSILCE")
+            or os.getenv("lemonslice") or None)
 
 
 _TALK_LEAD = float(os.getenv("NOVA_TALK_LEAD_SEC", "2.2"))   # measured: warm EVI delivery 2.2-3.4s
@@ -3139,7 +3148,7 @@ async def entrypoint(ctx: JobContext):
         # ?voiceonly session (room metadata): Nova is VOICE-ONLY by request — no
         # avatar, no credits burned. Audio publishes via RoomIO; browser shows static face.
         logger.info("[nova-v207] step 2: VOICE-ONLY session (requested) → avatar skipped")
-    elif os.getenv("LEMONSLICE_API_KEY") and os.getenv("NOVA_AVATAR", "lemonslice").lower() != "runway":
+    elif _lemon_key() and os.getenv("NOVA_AVATAR", "lemonslice").lower() != "runway":
         # LEMONSLICE AVATAR (2026-07-09, user call: "$10 on LemonSlice, Runway on
         # standby"). Same LiveKit avatar contract as Runway — her voice re-routes
         # through the avatar participant, which lip-syncs and publishes video.
@@ -3151,6 +3160,7 @@ async def entrypoint(ctx: JobContext):
             from livekit.plugins import lemonslice
             lemon_avatar = lemonslice.AvatarSession(
                 agent_id=os.getenv("NOVA_LEMON_AGENT_ID", "agent_0a645f26d6d77246"),
+                api_key=_lemon_key(),   # STAGE 1: key resolved from any env spelling
                 response_done_timeout=0.8,
             )
             # BOUNDED like Runway: a hanging start sits BEFORE session.start and

@@ -101,7 +101,7 @@ async def diag():
             "GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
             "GOOGLE_API_KEY": bool(os.getenv("GOOGLE_API_KEY")),
             "HUME_API_KEY": bool(os.getenv("HUME_API_KEY")),
-            "LEMONSLICE_API_KEY": bool(os.getenv("LEMONSLICE_API_KEY")),
+            "LEMONSLICE_API_KEY": bool(os.getenv("LEMONSLICE_API_KEY") or os.getenv("LEMONSILCE_API_KEY") or os.getenv("lemonsilce") or os.getenv("lemonslice")),
             "RUNWAYML_API_SECRET": bool(os.getenv("RUNWAYML_API_SECRET")),
         },
         # VOICE-SILENCE DEBUG (2026-07-09): which mouth is the worker actually
