@@ -2,7 +2,7 @@
 # Loora-grade brain architecture (Jun 5 2026)
 
 # Core LiveKit Agents framework + plugins
-livekit-agents[runway,elevenlabs,openai,silero,google]>=1.5.0,<2.0.0
+livekit-agents[runway,elevenlabs,openai,silero,google,lemonslice]>=1.5.0,<2.0.0
 
 # Gemini Flash for vision ("she sees me" moment, separate from brain)
 google-genai>=1.0.0

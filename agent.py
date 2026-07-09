@@ -670,6 +670,8 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 "gemini_key_fp": _fp(os.getenv("GEMINI_API_KEY")),
                 "google_key_fp": _fp(os.getenv("GOOGLE_API_KEY")),
                 "hume_key_set": bool(os.getenv("HUME_API_KEY")),
+                "lemon_key_set": bool(os.getenv("LEMONSLICE_API_KEY")),
+                "avatar_pick": os.getenv("NOVA_AVATAR", "lemonslice"),
             }).encode("utf-8"), reliable=True)
         except Exception:
             logger.exception("[env-diag] announce failed")
@@ -3134,9 +3136,42 @@ async def entrypoint(ctx: JobContext):
     # reveals with a static face when only audio arrives. She must never fully die
     # because the face vendor is down.
     if voice_only:
-        # ?voiceonly session (room metadata): Nova is VOICE-ONLY by request — no Runway
+        # ?voiceonly session (room metadata): Nova is VOICE-ONLY by request — no
         # avatar, no credits burned. Audio publishes via RoomIO; browser shows static face.
-        logger.info("[nova-v207] step 2: VOICE-ONLY session (requested) → Runway avatar skipped")
+        logger.info("[nova-v207] step 2: VOICE-ONLY session (requested) → avatar skipped")
+    elif os.getenv("LEMONSLICE_API_KEY") and os.getenv("NOVA_AVATAR", "lemonslice").lower() != "runway":
+        # LEMONSLICE AVATAR (2026-07-09, user call: "$10 on LemonSlice, Runway on
+        # standby"). Same LiveKit avatar contract as Runway — her voice re-routes
+        # through the avatar participant, which lip-syncs and publishes video.
+        # response_done_timeout=0.8 is REQUIRED for S2S voices (Gemini Live) per
+        # LemonSlice docs — without it end-of-response detection stalls.
+        # NOVA_AVATAR=runway flips back to the Runway path without a code change.
+        _prev_audio_out = session.output.audio
+        try:
+            from livekit.plugins import lemonslice
+            lemon_avatar = lemonslice.AvatarSession(
+                agent_id=os.getenv("NOVA_LEMON_AGENT_ID", "agent_0a645f26d6d77246"),
+                response_done_timeout=0.8,
+            )
+            # BOUNDED like Runway: a hanging start sits BEFORE session.start and
+            # would boot her voice late too. 20s (start includes an HTTP call).
+            await asyncio.wait_for(lemon_avatar.start(session, room=ctx.room), timeout=20.0)
+            logger.info("[nova-v207] step 2: LemonSlice avatar started "
+                        f"(agent {os.getenv('NOVA_LEMON_AGENT_ID', 'agent_0a645f26d6d77246')[:18]})")
+        except Exception as e:
+            # CRITICAL: lemonslice.start() rebinds session audio to the avatar
+            # BEFORE its HTTP call — on failure her voice points at a ghost
+            # participant and every reply is silent. Restore the pre-start output
+            # so RoomIO publishes her voice directly (true voice-only fallback).
+            try:
+                session.output.audio = _prev_audio_out
+                logger.info("[nova-v207] audio output RESTORED after LemonSlice failure")
+            except Exception:
+                logger.exception("[nova-v207] audio restore failed — voice may be silent")
+            if isinstance(e, asyncio.TimeoutError):
+                logger.error("[nova-v207] LemonSlice start TIMED OUT (20s) → VOICE-ONLY fallback")
+            else:
+                logger.exception(f"[nova-v207] LemonSlice start FAILED → VOICE-ONLY fallback: {e}")
     else:
         try:
             runway_avatar = runway.AvatarSession(avatar_id=avatar_id)
