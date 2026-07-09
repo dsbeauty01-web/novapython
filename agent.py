@@ -2982,19 +2982,24 @@ async def entrypoint(ctx: JobContext):
             # fully supports directed replies (probe-verified with the worker key).
             _gemini_model = os.getenv("NOVA_GEMINI_MODEL",
                                       "gemini-2.5-flash-native-audio-preview-12-2025")
-            # STAGE 1 turn cap: one short thing, then STOP — prompt law + a hard
-            # token ceiling so a single turn physically can't become a speech
-            # (~400 audio tokens ≈ 10-12s of talk, env-tunable).
+            # STAGE 1 turn cap: prompt law only. A hard max_output_tokens=400
+            # SILENCED the first reply of the session (probe 2026-07-09 evening:
+            # gen-done 3.13s, zero audio, resend also silent — first turn burns
+            # extra tokens digesting the system prompt, the cap exhausted before
+            # audio started). NOVA_GEMINI_MAX_TOKENS env re-arms a cap if wanted.
             evi_prompt += ("\n\nSPEECH LAW (hard rule): say ONE short thing — one or two "
                            "short sentences at most — then STOP completely and wait for "
                            "the child. Never chain two thoughts in one turn.")
+            _tok_cap = os.getenv("NOVA_GEMINI_MAX_TOKENS", "")
+            _llm_kwargs = {
+                "model": _gemini_model,
+                "voice": os.getenv("NOVA_GEMINI_VOICE", "Leda"),
+                "instructions": evi_prompt,
+            }
+            if _tok_cap.isdigit():
+                _llm_kwargs["max_output_tokens"] = int(_tok_cap)
             session_kwargs = {
-                "llm": google_rt.realtime.RealtimeModel(
-                    model=_gemini_model,
-                    voice=os.getenv("NOVA_GEMINI_VOICE", "Leda"),
-                    instructions=evi_prompt,
-                    max_output_tokens=int(os.getenv("NOVA_GEMINI_MAX_TOKENS", "400")),
-                ),
+                "llm": google_rt.realtime.RealtimeModel(**_llm_kwargs),
                 "allow_interruptions": True,
             }
             logger.info(f"[nova-gemini] USE_GEMINI=1 → voice = Gemini Live "
