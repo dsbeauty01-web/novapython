@@ -643,6 +643,30 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 pass
         asyncio.create_task(_announce_v2v())
 
+    # VOICE-SILENCE DEBUG (2026-07-09): the worker's env is invisible from
+    # outside (separate Render service from the web API) — announce the voice
+    # flags + key fingerprints into the room so a probe can read the truth.
+    # Fingerprints only (sha256[:10]), never the keys themselves.
+    async def _announce_env_diag():
+        await asyncio.sleep(1.2)
+        try:
+            import hashlib as _hl
+            def _fp(v):
+                return _hl.sha256((v or "").encode()).hexdigest()[:10]
+            await room.local_participant.publish_data(json.dumps({
+                "kind": "env-diag",
+                "USE_GEMINI": os.getenv("USE_GEMINI", ""),
+                "USE_EVI": os.getenv("USE_EVI", ""),
+                "NOVA_V2V": os.getenv("NOVA_V2V", ""),
+                "NOVA_GEMINI_MODEL": os.getenv("NOVA_GEMINI_MODEL", "(default)"),
+                "gemini_key_fp": _fp(os.getenv("GEMINI_API_KEY")),
+                "google_key_fp": _fp(os.getenv("GOOGLE_API_KEY")),
+                "hume_key_set": bool(os.getenv("HUME_API_KEY")),
+            }).encode("utf-8"), reliable=True)
+        except Exception:
+            logger.exception("[env-diag] announce failed")
+    asyncio.create_task(_announce_env_diag())
+
     @room.on("data_received")
     def on_data(packet: rtc.DataPacket):
         try:
@@ -2219,6 +2243,18 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
             if getattr(state, "_last_nova_at", 0) > _before:
                 return   # her reply landed while we waited — done
             logger.info(f"[BRAIN] typed text got NO reply in 5s → resending once: '{text[:40]}'")
+            # VOICE-SILENCE DEBUG (2026-07-09): surface the voice engine's real
+            # failure into the room — a probe/browser can read what Render logs say
+            try:
+                _room = getattr(state, "room", None)
+                if _room is not None:
+                    await _room.local_participant.publish_data(json.dumps({
+                        "kind": "voice-error",
+                        "err": getattr(_model, "last_error", None) or "(no exception recorded — reply never started)",
+                        "text": text[:60],
+                    }).encode("utf-8"), reliable=True)
+            except Exception:
+                pass
             try:
                 if _model is not None and _v2v_on() and hasattr(_model, "send_user_text"):
                     _model.send_user_text(text)

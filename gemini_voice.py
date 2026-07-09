@@ -104,7 +104,12 @@ class GeminiVoiceAdapter:
         async def _go():
             try:
                 await s.generate_reply(**kwargs)
-            except Exception:
+                self.last_error = None
+            except Exception as e:
+                # VOICE-SILENCE DEBUG (2026-07-09): keep the failure text so the
+                # worker can announce it into the room (Render logs are the only
+                # other place this lands, and they're often out of reach)
+                self.last_error = f"{type(e).__name__}: {e}"
                 logger.exception("[gemini] generate_reply failed")
         asyncio.create_task(_go())
         logger.info(f"[EVI->] gemini user turn: '{user_input[:60]}'"
