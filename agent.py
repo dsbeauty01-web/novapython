@@ -2251,17 +2251,28 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
         logger.exception(f"[BRAIN] generate_reply FAILED for kid input: {e}")
 
     async def _ensure_reply():
-        await asyncio.sleep(5.0)
-        if getattr(state, "_last_nova_at", 0) <= _before and state.active and not state.game_done.is_set():
+        # STAGE 2.2 (2026-07-09): ONE reply per turn, EVER. The 5s deadline kept
+        # losing to the slow FIRST generation of a session (7-10s measured) — the
+        # retry then produced a second answer back-to-back. Now: poll up to 12s
+        # and CANCEL the retry the instant her reply's audio starts.
+        for _ in range(48):
+            await asyncio.sleep(0.25)
+            if (getattr(state, "_last_nova_at", 0) > _before
+                    or getattr(state, "_is_speaking", False)):
+                return   # her reply started — retry cancelled
+            if not state.active or state.game_done.is_set():
+                return
+        if getattr(state, "_last_nova_at", 0) <= _before:
             # barge-in rule holds for the retry too: never resend INTO her audio
             for _ in range(20):
                 if (not getattr(state, "_is_speaking", False)
                         and not getattr(state, "_clip_playing", False)):
                     break
                 await asyncio.sleep(0.25)
-            if getattr(state, "_last_nova_at", 0) > _before:
+            if (getattr(state, "_last_nova_at", 0) > _before
+                    or getattr(state, "_is_speaking", False)):
                 return   # her reply landed while we waited — done
-            logger.info(f"[BRAIN] typed text got NO reply in 5s → resending once: '{text[:40]}'")
+            logger.info(f"[BRAIN] typed text got NO reply in 12s → resending once: '{text[:40]}'")
             # VOICE-SILENCE DEBUG (2026-07-09): surface the voice engine's real
             # failure into the room — a probe/browser can read what Render logs say
             try:
@@ -3085,6 +3096,20 @@ async def entrypoint(ctx: JobContext):
             speaking = (new_state == "speaking")
             state._is_speaking = speaking   # mute-guard checks this (text lands later than audio)
             state.pace.mark_speaking(speaking)
+            # STAGE 2.1 (2026-07-09): SHE MUST NEVER HEAR HERSELF. The clip path
+            # already closes the Gemini door; her LIVE voice did not — echo of her
+            # own line came back through the kid's mic and she answered herself.
+            # Door CLOSED while she speaks, restored to the phase's base state
+            # after (same rule as the post-clip restore). Gemini path only — Hume
+            # EVI is one S2S socket and handles its own echo.
+            if _gemini_on():
+                _vm = getattr(state, "_evi_model", None)
+                if _vm is not None and _v2v_on():
+                    if speaking:
+                        _vm._ears_open = False
+                    elif not getattr(_vm, "_clip_playing", False):
+                        _vm._ears_open = (getattr(state.ctx, "phase", "intro")
+                                          in ("intro", "recognition", "goodbye"))
             # COMMERCIAL-INTRO Part E: reply latency = kid's final transcript → her
             # audio starts. Target ≤1.5s, hard ceiling 3s (ERROR above it).
             if speaking:
