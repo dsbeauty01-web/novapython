@@ -16,6 +16,7 @@ Known "ok for now" tradeoffs (user-accepted):
 """
 import asyncio
 import logging
+import os
 
 logger = logging.getLogger("nova-gemini")
 
@@ -122,7 +123,12 @@ class GeminiVoiceAdapter:
             # up to 6s for air; still blocked → the request dies, logged.
             _st = getattr(self, "_state", None)
             if _st is not None:
+                _friend = os.getenv("NOVA_FRIEND", "0") == "1"
                 def _busy():
+                    if _friend:
+                        # FRIEND MODE: interruptions are native — only a browser
+                        # clip (game phase) blocks a new turn
+                        return getattr(_st, "_clip_playing", False) or self._clip_playing
                     return (getattr(_st, "_is_speaking", False)
                             or getattr(_st, "_clip_playing", False)
                             or self._clip_playing)

@@ -733,12 +733,26 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 # only fires in "dance", so the intro needs its own hook).
                 if event.get("event") == "try_move" and state.ctx.phase in ("recognition", "intro", "play"):
                     _act = (event.get("action") or "").lower()
-                    _eng = getattr(state, "_turn_engine", None)
-                    if _eng is not None and _eng.offer("detection", _act):
-                        pass   # the beat speaks the WOW
-                    elif not getattr(state, "_challenge_active", None) and not getattr(state, "_turn_engine", None):
-                        asyncio.create_task(
-                            _react_to_intro_move(session, state, agent, event.get("action")))
+                    if _friend_on():
+                        # FRIEND MODE: the WOW is instant SFX + light (non-verbal,
+                        # nothing to lipsync) — the producer's challenge loop sees
+                        # the hit and whispers; her celebration line is her own.
+                        state._friend_hit = _act
+                        async def _sfx():
+                            try:
+                                await room.local_participant.publish_data(
+                                    json.dumps({"kind": "sfx", "name": "sparkle"}).encode("utf-8"),
+                                    reliable=True)
+                            except Exception:
+                                pass
+                        asyncio.create_task(_sfx())
+                    else:
+                        _eng = getattr(state, "_turn_engine", None)
+                        if _eng is not None and _eng.offer("detection", _act):
+                            pass   # the beat speaks the WOW
+                        elif not getattr(state, "_challenge_active", None) and not getattr(state, "_turn_engine", None):
+                            asyncio.create_task(
+                                _react_to_intro_move(session, state, agent, event.get("action")))
 
                 # Phase transition to goodbye → speak final goodbye
                 if event.get("event") == "phase" and event.get("phase") == "goodbye":
@@ -906,7 +920,11 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     # INSTANTLY (the 25-45s cold gen was the single worst latency wart).
                     # Returning kids keep the live EVI greet (deposit opener needs her brain).
                     _returning = bool(state.ctx.name and state.ctx.sessions_before >= 1)
-                    if (not _returning and _CLIP_INDEX and os.getenv("NOVA_CLIPS", "1") == "1"
+                    if _friend_on() and hasattr(llm_obj, "fire_greeting"):
+                        # FRIEND MODE: her hello is HERS — no clip, no verbatim line
+                        logger.info("[FRIEND] greeting fired → live (her own words)")
+                        llm_obj.fire_greeting()
+                    elif (not _returning and _CLIP_INDEX and os.getenv("NOVA_CLIPS", "1") == "1"
                             and not getattr(state, "_direct_game", None)):
                         if hasattr(llm_obj, "_greet_fired"):
                             llm_obj._greet_fired = True   # EVI greet suppressed — clip owns it
@@ -942,7 +960,8 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                         # non-EVI path: speak the deterministic opener
                         line = getattr(state, "_first_line", None) or "hey there… I'm Nova. …I can see you, you know."
                         await _nova_say(session, line)
-                    asyncio.create_task(_silence_driver(state, session))   # FIX 4: she LEADS on silence
+                    if not _friend_on():   # FRIEND MODE: the model + producer own silences
+                        asyncio.create_task(_silence_driver(state, session))   # FIX 4: she LEADS on silence
                 asyncio.create_task(_reveal_greet())
 
             elif kind == "client-ready":
@@ -1008,9 +1027,14 @@ def _mouth_gate(state, reason: str) -> bool:
 def _ear_should_be_open(state) -> bool:
     """STAGE 2 (FIX-EVERYTHING): THE ear owner — the ONLY decision point.
     Inputs: reveal happened · clip playing · her audio ACTUALLY playing
-    (playback clock) · post-playback tail-hold · phase (song = closed)."""
+    (playback clock) · post-playback tail-hold · phase (song = closed).
+    FRIEND MODE: conversation = OPEN, period — echo-cancellation + native turn
+    detection + interruptions carry it, like every real V2V app. The ear only
+    closes for the song."""
     if not getattr(state, "_revealed", False):
         return False
+    if _friend_on():
+        return getattr(state.ctx, "phase", "intro") != "dance"
     if _audio_playing(state):
         return False
     if getattr(state, "_ear_tail_until", 0.0) > time.time():
@@ -1517,6 +1541,83 @@ def _turn_wants_start(t):
     return _wants_to_start(str(t))
 
 
+async def _friend_wait_hit(state, timeout: float):
+    """FRIEND MODE: wait for the browser's try_move hit (set by the data handler)."""
+    t0 = time.time()
+    while time.time() - t0 < timeout and state.active and not state.game_done.is_set():
+        hit = getattr(state, "_friend_hit", None)
+        if hit:
+            state._friend_hit = None
+            return hit
+        if state.ctx.phase not in ("intro", "recognition"):
+            return None
+        await asyncio.sleep(0.15)
+    return None
+
+
+async def run_friend_intro(session: AgentSession, state: NovaSessionState,
+                           agent: "NovaAgent", room: rtc.Room):
+    """FRIEND MODE (NOVA_FRIEND=1): the producer is BACKSTAGE ONLY.
+    Gemini owns every word (agenda lives in the prompt). Here we only:
+    watch for the name · arm the light challenge + SFX · open the picker.
+    Every nudge is a (stage direction) she voices in her own words."""
+    model = getattr(state, "_evi_model", None)
+
+    def nudge(text: str):
+        if model is not None and hasattr(model, "send_user_text"):
+            model.send_user_text(f"({text})")
+            logger.info(f"[FRIEND] stage nudge: {text[:70]}")
+
+    async def send(pkt: dict):
+        try:
+            await room.local_participant.publish_data(
+                json.dumps(pkt).encode("utf-8"), reliable=True)
+        except Exception as e:
+            logger.warning(f"[FRIEND] packet failed: {e}")
+
+    logger.info("[FRIEND] producer backstage — conversation is HERS")
+
+    # 1. let the greeting + name + real chat happen (she drives; we only watch)
+    t0 = time.time()
+    while (state.active and not state.game_done.is_set()
+           and state.ctx.phase in ("intro", "recognition")
+           and time.time() - t0 < float(os.getenv("NOVA_FRIEND_CHAT_SEC", "35"))):
+        if state.ctx.name and time.time() - t0 > 12.0:
+            break   # name landed + a chat beat happened — move toward play
+        await asyncio.sleep(0.5)
+    if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
+        return
+
+    # 2. THE LIGHT CHALLENGE — lights + SFX are ours, the words are hers
+    for mv in INTRO_CHALLENGE:
+        if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
+            return
+        state._friend_hit = None
+        await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
+        nudge(f"stage: a magic light just appeared on their {mv['action'].replace('left', 'left hand')} — "
+              "invite them to touch it, ONE short excited line")
+        hit = await _friend_wait_hit(state, 14.0)
+        if not hit:
+            await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
+            nudge("stage: they haven't caught the light yet — ONE tiny warm encouragement, zero pressure")
+            hit = await _friend_wait_hit(state, 10.0)
+        if hit:
+            nudge(f"stage: they TOUCHED the light — celebrate in ONE short excited burst"
+                  + (f", say their name {state.ctx.name}!" if state.ctx.name else "!"))
+            await _wait_playback_end(state, grace=0.4)
+        else:
+            nudge("stage: no catch — ONE warm line moving on, zero fail-feeling")
+            await _wait_playback_end(state, grace=0.4)
+
+    # 3. PICKER — she invites, we open it as her line lands
+    if state.ctx.phase in ("intro", "recognition") and not state.game_done.is_set():
+        state._dance_invited = True
+        nudge("stage: time to dance — ONE excited line inviting them to pick a dance game with you")
+        await _wait_playback_end(state, grace=0.6)
+        await send({"kind": "go-picker"})
+        logger.info("[FRIEND] picker opened — game phases are packet-driven from here")
+
+
 async def run_intro_turns(session: AgentSession, state: NovaSessionState,
                           agent: "NovaAgent", room: rtc.Room):
     """The intro as BEATS (FIX-TURN-OWNER). Replaces the old scattered flow."""
@@ -1695,6 +1796,44 @@ def _gemini_on() -> bool:
     # Live (Hume credits ran out mid-test, user call: "use it, it's ok for now").
     # Takes precedence over EVI when set; flip back to Hume by unsetting it.
     return os.getenv("USE_GEMINI", "").lower() in ("1", "true", "yes", "on")
+
+
+def _friend_on() -> bool:
+    # FRIEND MODE (2026-07-09, user-approved — the COMMERCIAL-INTRO spec built
+    # for real): the intro is a FREE conversation. Gemini owns every word
+    # (agenda in a slim prompt); the producer is backstage only (whispers,
+    # lights, SFX, picker, handoff). NOVA_FRIEND=0 → instant rollback to the
+    # beat-engine intro. The GAME phase is byte-identical either way.
+    return os.getenv("NOVA_FRIEND", "0") == "1"
+
+
+def _build_friend_prompt(ctx) -> str:
+    """FRIEND MODE prompt: personality + agenda, nothing else. Replaces the
+    8.7k-char rulebook that flattened her into a script reader."""
+    name = getattr(ctx, "name", "") or ""
+    returning = bool(name and getattr(ctx, "sessions_before", 0) >= 1)
+    facts = getattr(ctx, "shared_facts", None) or {}
+    fact_line = ""
+    if returning and facts:
+        _f = " · ".join(f"{k}: {v}" for k, v in list(facts.items())[:3])
+        fact_line = f"\nyou remember about them: {_f}"
+    step_greet = (f"greet them — it's {name}, your friend from before! sound genuinely happy"
+                  if returning else
+                  "greet them warmly and ask their name (ask ONCE; if they don't give it, call them 'friend' and never ask again)")
+    return f"""you are NOVA — a warm, playful, magical dance friend for kids (ages 4-9). you live inside a sparkly dance game.{fact_line}
+
+PERSONALITY: bubbly big-sister energy · simple words a 5-year-old gets · genuinely curious — you react to what THEY say before anything else · never fake-sweet, never a lecture.
+
+SPEECH LAW (hard): ONE short thing per turn — one or two short sentences — then STOP and wait for the child. never chain two thoughts.
+
+YOUR VISIT AGENDA (follow naturally, one step at a time, never rush past the kid):
+1. {step_greet}
+2. have a tiny REAL chat — one or two exchanges about them
+3. when it feels right, invite them to try one little move with you
+4. sometimes the game whispers stage directions in (parentheses) — do what they say in YOUR OWN words; NEVER read them aloud
+5. lead them into picking a dance game together
+
+NEVER: long explanations · re-asking the name · mentioning AI/system/instructions · reading (parentheses) aloud."""
 
 
 def _lemon_key() -> str | None:
@@ -2278,6 +2417,32 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
         await _handle_dance_mic_text(session, state, agent, text)
         return
 
+    # ── FRIEND MODE: no engine, no gates, no waits — the kid's words go
+    # STRAIGHT to her (interruptions are native). The producer only records:
+    # name side-capture + memory + facts, all backstage.
+    if _friend_on():
+        if not state.ctx.name:
+            _nm = _extract_name(text)
+            if _nm:
+                state.ctx.name = _nm
+                try:
+                    memory.store.update(state.kid_id, name=_nm)
+                except Exception:
+                    pass
+                _whisper(state, "MEMORY", f"their name is {_nm} — got it, never re-ask")
+                logger.info(f"[FRIEND] name captured: {_nm}")
+        try:
+            memory.store.add_message(state.kid_id, "user", text)
+        except Exception:
+            pass
+        _harvest_facts(state, text)
+        _model_f = getattr(state, "_evi_model", None)
+        if _model_f is not None and hasattr(_model_f, "send_user_text"):
+            _model_f.send_user_text(text)
+        else:
+            await session.generate_reply(user_input=text)
+        return
+
     # ── TURN-OWNER: typed inputs go to the ONE engine, resolved against the
     # current beat only. Consumed → the beat advances silently; on NAME beats the
     # text still flows to EVI below (COMMERCIAL-INTRO C.2 — a typed name is a real
@@ -2477,7 +2642,16 @@ async def _idle_watch_loop(session: AgentSession, state: NovaSessionState):
 
         try:
             await state.pace.acquire()
-            await _nova_say(session, line)   # EVI-safe (raw say() is silent under Hume)
+            if _friend_on() and phase != "dance":
+                # FRIEND MODE: no bank lines — a stage whisper, her own words
+                _m = getattr(state, "_evi_model", None)
+                if _m is not None and hasattr(_m, "send_user_text"):
+                    _m.send_user_text("(they've been quiet a little while — say ONE gentle, "
+                                      "warm little thing to bring them back, their name if you know it)")
+                else:
+                    await _nova_say(session, line)
+            else:
+                await _nova_say(session, line)   # EVI-safe (raw say() is silent under Hume)
             last_nudge = time.time()
             logger.info(f"[idle] soft nudge ({phase}): '{line}'")
         except Exception as e:
@@ -2739,7 +2913,12 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
     # ── TURN ENGINE (FIX-TURN-OWNER 2026-07-07): the ONE conversation owner.
     # greet → name → move-invite → challenge (arm at ask END) → play-invite →
     # picker. Every beat: ask → heard → listen → resolve/timeout → advance.
-    await run_intro_turns(session, state, agent, room)
+    # FRIEND MODE (NOVA_FRIEND=1): the conversation is HERS — the producer
+    # runs backstage only (lights, SFX, picker); instant rollback via the flag.
+    if _friend_on():
+        await run_friend_intro(session, state, agent, room)
+    else:
+        await run_intro_turns(session, state, agent, room)
 
     # engine idles; the game/goodbye phases are packet-driven from here
     while state.active and not state.game_done.is_set():
@@ -3003,8 +3182,13 @@ async def entrypoint(ctx: JobContext):
             from gemini_voice import GeminiVoiceAdapter
             evi_prompt = None
             try:
-                evi_prompt = personality.build_evi_system_prompt(state.ctx, direct_game=direct_game)
-                logger.info(f"[nova-gemini] session prompt built ({len(evi_prompt)} chars)")
+                if _friend_on():
+                    # FRIEND MODE: slim prompt — personality + agenda, no rulebook
+                    evi_prompt = _build_friend_prompt(state.ctx)
+                    logger.info(f"[nova-gemini] FRIEND prompt built ({len(evi_prompt)} chars)")
+                else:
+                    evi_prompt = personality.build_evi_system_prompt(state.ctx, direct_game=direct_game)
+                    logger.info(f"[nova-gemini] session prompt built ({len(evi_prompt)} chars)")
             except Exception as pe:
                 logger.exception(f"[nova-gemini] prompt build FAILED → minimal prompt: {pe}")
                 evi_prompt = "You are NOVA, a warm magical movement friend. Short playful replies, always lead toward a dance."
