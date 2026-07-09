@@ -2900,16 +2900,25 @@ async def entrypoint(ctx: JobContext):
                     "(the dancer just arrived and the dance game is starting "
                     "right now — greet them with ONE short excited line, no questions)")
             state._evi_model = _gemini_adapter
+            # ROOT CAUSE FIX (2026-07-09, "she doesn't reply to text"): the plugin
+            # IGNORES generate_reply on any "3.1" live model (capabilities.
+            # mutable_chat_context=False → instantly-failed future, swallowed by
+            # AgentSession — replies "complete" in 0.03s with zero audio). Every
+            # worker-directed line (typed chat, greeting, briefs, whispers) died
+            # there. gemini-2.5-flash-native-audio is the plugin's own default and
+            # fully supports directed replies (probe-verified with the worker key).
+            _gemini_model = os.getenv("NOVA_GEMINI_MODEL",
+                                      "gemini-2.5-flash-native-audio-preview-12-2025")
             session_kwargs = {
                 "llm": google_rt.realtime.RealtimeModel(
-                    model=os.getenv("NOVA_GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
+                    model=_gemini_model,
                     voice=os.getenv("NOVA_GEMINI_VOICE", "Leda"),
                     instructions=evi_prompt,
                 ),
                 "allow_interruptions": True,
             }
             logger.info(f"[nova-gemini] USE_GEMINI=1 → voice = Gemini Live "
-                        f"({os.getenv('NOVA_GEMINI_MODEL', 'gemini-3.1-flash-live-preview')}, "
+                        f"({_gemini_model}, "
                         f"voice {os.getenv('NOVA_GEMINI_VOICE', 'Leda')})")
         except Exception as e:
             logger.exception(f"[nova-gemini] init FAILED — refusing silent fallback: {e}")
