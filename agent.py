@@ -1804,7 +1804,9 @@ def _friend_on() -> bool:
     # (agenda in a slim prompt); the producer is backstage only (whispers,
     # lights, SFX, picker, handoff). NOVA_FRIEND=0 → instant rollback to the
     # beat-engine intro. The GAME phase is byte-identical either way.
-    return os.getenv("NOVA_FRIEND", "0") == "1"
+    # DEFAULT ON (user call 2026-07-09: no more env-var hunts — rollback is
+    # setting NOVA_FRIEND=0, or one flag-flip push from the CLI).
+    return os.getenv("NOVA_FRIEND", "1") == "1"
 
 
 def _build_friend_prompt(ctx) -> str:
