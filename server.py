@@ -15,6 +15,7 @@ The actual conversation happens between the browser and the LiveKit Agent
 import os
 import time
 import json
+import hashlib
 import secrets
 import logging
 from datetime import timedelta
@@ -98,7 +99,23 @@ async def diag():
             "ANTHROPIC_API_KEY": bool(os.getenv("ANTHROPIC_API_KEY")),
             "ELEVENLABS_API_KEY": bool(os.getenv("ELEVENLABS_API_KEY") or os.getenv("ELEVEN_API_KEY")),
             "GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
+            "GOOGLE_API_KEY": bool(os.getenv("GOOGLE_API_KEY")),
+            "HUME_API_KEY": bool(os.getenv("HUME_API_KEY")),
             "RUNWAYML_API_SECRET": bool(os.getenv("RUNWAYML_API_SECRET")),
+        },
+        # VOICE-SILENCE DEBUG (2026-07-09): which mouth is the worker actually
+        # wired to? These flags decide it in agent.py — silent voice with
+        # working clips means the selected backend fails per-turn.
+        "voice_flags": {
+            "USE_GEMINI": os.getenv("USE_GEMINI", ""),
+            "USE_EVI": os.getenv("USE_EVI", ""),
+            "NOVA_V2V": os.getenv("NOVA_V2V", ""),
+            "NOVA_FORCE_ELEVENLABS": os.getenv("NOVA_FORCE_ELEVENLABS", ""),
+            "NOVA_GEMINI_MODEL": os.getenv("NOVA_GEMINI_MODEL", "(default)"),
+            # fingerprints (first 10 hex of sha256) — compare keys across
+            # machines without ever exposing them
+            "gemini_key_fp": hashlib.sha256(os.getenv("GEMINI_API_KEY", "").encode()).hexdigest()[:10],
+            "google_key_fp": hashlib.sha256(os.getenv("GOOGLE_API_KEY", "").encode()).hexdigest()[:10],
         },
         "total_kids": total_kids,
     }
