@@ -117,6 +117,23 @@ class GeminiVoiceAdapter:
 
         async def _go():
             import time as _t
+            # STAGE 1 MOUTH-GATE (FIX-EVERYTHING): never start a generation while
+            # her audio is still PLAYING (playback clock — includes clips). Wait
+            # up to 6s for air; still blocked → the request dies, logged.
+            _st = getattr(self, "_state", None)
+            if _st is not None:
+                def _busy():
+                    return (getattr(_st, "_is_speaking", False)
+                            or getattr(_st, "_clip_playing", False)
+                            or self._clip_playing)
+                _w0 = _t.time()
+                while _t.time() - _w0 < 6.0 and _busy():
+                    await asyncio.sleep(0.15)
+                if _busy():
+                    logger.info(f"[MOUTH-GATE] blocked: gemini turn '{user_input[:40]}' — audio still playing after 6s, dropped")
+                    self.last_error = "mouth-gate blocked (audio playing)"
+                    self._diag("gen-blocked", text=user_input[:50])
+                    return
             t0 = _t.time()
             self._inflight += 1
             self._diag("gen-start", text=user_input[:50], inflight=self._inflight)

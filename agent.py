@@ -986,6 +986,43 @@ if _CLIP_INDEX:
     logging.getLogger("nova-v207").info(f"[CLIP] index loaded: {len(_CLIP_INDEX)} lines clip-backed")
 
 
+def _audio_playing(state) -> bool:
+    """THE PLAYBACK CLOCK (FIX-EVERYTHING PART 0): is any of HER audio audibly
+    playing right now — live speech (agent_state 'speaking', which for the
+    avatar path tracks the avatar's reported playback) or a browser clip."""
+    if state is None:
+        return False
+    _m = getattr(state, "_evi_model", None)
+    return bool(getattr(state, "_is_speaking", False)
+                or getattr(state, "_clip_playing", False)
+                or (_m is not None and getattr(_m, "_clip_playing", False)))
+
+
+def _mouth_gate(state, reason: str) -> bool:
+    """STAGE 1: THE single choke point — no new generation may start while her
+    audio is still playing. Callers skip (False) or _wait_playback_end first."""
+    if _audio_playing(state):
+        logger.info(f"[MOUTH-GATE] blocked: {reason} (her audio still playing)")
+        return False
+    return True
+
+
+async def _wait_playback_end(state, grace: float = 0.3, cap: float = 25.0):
+    """Block until her CURRENT audio truly finished playing (+grace tail).
+    The one clock: playback-end, never generation-done."""
+    t0 = time.time()
+    waited = False
+    while time.time() - t0 < cap and _audio_playing(state):
+        waited = True
+        await asyncio.sleep(0.1)
+    if _audio_playing(state):
+        logger.warning(f"[PLAYBACK-END] cap {cap}s hit — proceeding anyway")
+    elif waited:
+        logger.info(f"[PLAYBACK-END] her audio done (+{grace}s tail)")
+    if grace > 0:
+        await asyncio.sleep(grace)
+
+
 async def _nova_say(session: AgentSession, line: str):
     """Speak an EXACT line — THE one speech path.
     1) CLIP FIRST: exact text found in the pre-rendered pack → browser plays the real
@@ -1046,6 +1083,10 @@ async def _nova_say(session: AgentSession, line: str):
         except Exception as e:
             logger.warning(f"[CLIP] publish failed → EVI fallback: {e}")
     try:
+        # STAGE 1: directed lines obey the playback clock too — never start a
+        # generation over her own playing audio (the monologue machine).
+        if st is not None:
+            await _wait_playback_end(st, grace=0.0, cap=10.0)
         if _gemini_on():
             # Gemini treats instructions as guidance, not a script — pin it verbatim
             await session.generate_reply(
@@ -1390,7 +1431,13 @@ class TurnEngine:
         return True
 
     async def listen(self, matcher, timeout):
-        """Open the listen window — inputs accepted only NOW (spec §2)."""
+        """Open the listen window — inputs accepted only NOW (spec §2).
+        STAGE 1 RE-CLOCK (FIX-EVERYTHING): the window opens at her PLAYBACK end
+        (+0.3s), never at generation end — with the avatar her audio plays
+        seconds after generation, and windows/timeouts that start early are the
+        monologue machine (timeout fires while she's still audibly talking)."""
+        await _wait_playback_end(self.state)
+        logger.info(f"[EAR OPEN] listen window opens at playback-end (beat {self.beat_name})")
         self._matcher = matcher
         self._result = None
         self._got = asyncio.Event()
@@ -2081,6 +2128,9 @@ async def _silence_driver(state: NovaSessionState, session: AgentSession):
                     except Exception:
                         pass
             else:
+                # STAGE 1: silence nudges pass the mouth-gate like everyone else
+                if not _mouth_gate(state, "silence-driver nudge"):
+                    continue
                 await session.generate_reply(
                     instructions="(the dancer is silent — retry the question once shorter, or use the fallback and advance)")
             state._last_nova_at = time.time()   # count the nudge as her turn (prevents machine-gunning)
@@ -2922,6 +2972,7 @@ async def entrypoint(ctx: JobContext):
                     "(the dancer just arrived and the dance game is starting "
                     "right now — greet them with ONE short excited line, no questions)")
             state._evi_model = _gemini_adapter
+            _gemini_adapter._state = state   # STAGE 1: mouth-gate reads the playback clock
             # ROOT CAUSE FIX (2026-07-09, "she doesn't reply to text"): the plugin
             # IGNORES generate_reply on any "3.1" live model (capabilities.
             # mutable_chat_context=False → instantly-failed future, swallowed by
@@ -2931,11 +2982,18 @@ async def entrypoint(ctx: JobContext):
             # fully supports directed replies (probe-verified with the worker key).
             _gemini_model = os.getenv("NOVA_GEMINI_MODEL",
                                       "gemini-2.5-flash-native-audio-preview-12-2025")
+            # STAGE 1 turn cap: one short thing, then STOP — prompt law + a hard
+            # token ceiling so a single turn physically can't become a speech
+            # (~400 audio tokens ≈ 10-12s of talk, env-tunable).
+            evi_prompt += ("\n\nSPEECH LAW (hard rule): say ONE short thing — one or two "
+                           "short sentences at most — then STOP completely and wait for "
+                           "the child. Never chain two thoughts in one turn.")
             session_kwargs = {
                 "llm": google_rt.realtime.RealtimeModel(
                     model=_gemini_model,
                     voice=os.getenv("NOVA_GEMINI_VOICE", "Leda"),
                     instructions=evi_prompt,
+                    max_output_tokens=int(os.getenv("NOVA_GEMINI_MAX_TOKENS", "400")),
                 ),
                 "allow_interruptions": True,
             }
