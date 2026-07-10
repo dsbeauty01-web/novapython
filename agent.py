@@ -1085,8 +1085,15 @@ async def _wait_playback_start(state, timeout: float = 12.0) -> bool:
     """CALLTUNS (2026-07-10): block until her NEXT audio actually STARTS
     playing. Generation latency is 2-10s — anything choreographed 'with/after
     her line' must anchor on playback-START, never on the nudge (that race
-    opened the picker while she was still asking). False = nothing started."""
+    opened the picker while she was still asking). False = nothing started.
+    EDGE-TRIGGERED (shocko session): if her PREVIOUS line is still playing,
+    wait for it to END first — otherwise 'started' fires instantly on the old
+    line (the +2ms double-pulse in the live log)."""
     t0 = time.time()
+    while time.time() - t0 < timeout and _audio_playing(state):
+        if not getattr(state, "active", True):
+            return False
+        await asyncio.sleep(0.1)
     while time.time() - t0 < timeout and not _audio_playing(state):
         if not getattr(state, "active", True):
             return False
