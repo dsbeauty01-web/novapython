@@ -3241,8 +3241,16 @@ async def entrypoint(ctx: JobContext):
             # worker-directed line (typed chat, greeting, briefs, whispers) died
             # there. gemini-2.5-flash-native-audio is the plugin's own default and
             # fully supports directed replies (probe-verified with the worker key).
+            # SESSION-DEATH FIX (2026-07-10, probe-proven ×4): the 2.5 native-audio
+            # preview KILLS the live session ~50s in — APIError 1007
+            # "CONTENT_TYPE_AUDIO is not supported for this model configuration"
+            # (recoverable=False → AgentSession closes) once kid AUDIO turns sit in
+            # the synced context. Known incompatibility class (livekit/agents#4423).
+            # gemini-2.0-flash-live-001 (half-cascade) takes audio input + directed
+            # replies without the 1007 and generates faster. NOVA_GEMINI_MODEL env
+            # still overrides this default either way.
             _gemini_model = os.getenv("NOVA_GEMINI_MODEL",
-                                      "gemini-2.5-flash-native-audio-preview-12-2025")
+                                      "gemini-2.0-flash-live-001")
             # STAGE 1 turn cap: prompt law only. A hard max_output_tokens=400
             # SILENCED the first reply of the session (probe 2026-07-09 evening:
             # gen-done 3.13s, zero audio, resend also silent — first turn burns
