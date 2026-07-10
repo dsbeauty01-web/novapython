@@ -1081,6 +1081,19 @@ async def _wait_playback_end(state, grace: float = 0.3, cap: float = 25.0):
         await asyncio.sleep(grace)
 
 
+async def _wait_playback_start(state, timeout: float = 12.0) -> bool:
+    """CALLTUNS (2026-07-10): block until her NEXT audio actually STARTS
+    playing. Generation latency is 2-10s — anything choreographed 'with/after
+    her line' must anchor on playback-START, never on the nudge (that race
+    opened the picker while she was still asking). False = nothing started."""
+    t0 = time.time()
+    while time.time() - t0 < timeout and not _audio_playing(state):
+        if not getattr(state, "active", True):
+            return False
+        await asyncio.sleep(0.1)
+    return _audio_playing(state)
+
+
 async def _nova_say(session: AgentSession, line: str):
     """Speak an EXACT line — THE one speech path.
     1) CLIP FIRST: exact text found in the pre-rendered pack → browser plays the real
@@ -1593,13 +1606,20 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
             return
         state._friend_hit = None
+        # CALLTUNS ORDER (2026-07-10, user spec): light ON first — the kid must
+        # SEE it before she mentions it. Then, the moment her line actually
+        # starts playing (gen takes 2-10s; the 2.6s pulse ring would be long
+        # dead), RE-PULSE so light + words land together.
         await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
         nudge(f"stage: a magic light just appeared on their {mv['action'].replace('left', 'left hand')} — "
               "invite them to touch it, ONE short excited line")
+        if await _wait_playback_start(state, 12.0):
+            await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
         hit = await _friend_wait_hit(state, 14.0)
         if not hit:
-            await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
             nudge("stage: they haven't caught the light yet — ONE tiny warm encouragement, zero pressure")
+            if await _wait_playback_start(state, 12.0):
+                await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
             hit = await _friend_wait_hit(state, 10.0)
         if hit:
             nudge(f"stage: they TOUCHED the light — celebrate in ONE short excited burst"
@@ -1613,6 +1633,10 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
     if state.ctx.phase in ("intro", "recognition") and not state.game_done.is_set():
         state._dance_invited = True
         nudge("stage: time to dance — ONE excited line inviting them to pick a dance game with you")
+        # CALLTUNS (2026-07-10, user spec): the picker must open AFTER her
+        # invite has been HEARD. _wait_playback_end alone returned instantly
+        # (gen still in flight → no audio yet) → picker opened mid-question.
+        await _wait_playback_start(state, 12.0)
         await _wait_playback_end(state, grace=0.6)
         await send({"kind": "go-picker"})
         logger.info("[FRIEND] picker opened — game phases are packet-driven from here")
@@ -3374,8 +3398,9 @@ async def entrypoint(ctx: JobContext):
                     if (_gemini_on() and _v2v_on()
                             and getattr(state.ctx, "phase", "") != "dance"):
                         _vm2 = getattr(state, "_evi_model", None)
-                        if (_vm2 is not None and hasattr(_vm2, "send_user_text")
-                                and getattr(_vm2, "_inflight", 0) == 0):
+                        if _vm2 is not None and hasattr(_vm2, "send_user_text"):
+                            # CALLTUNS: no inflight-skip — the adapter QUEUES turns
+                            # that land mid-generation instead of dropping them.
                             _vm2.send_user_text(text)
                             logger.info(f"[HEAR→REPLY] directed reply fired for voice turn '{text[:50]}'")
                 except Exception:

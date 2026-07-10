@@ -37,6 +37,7 @@ class GeminiVoiceAdapter:
         self._ctx_notes: list[str] = []     # whispers ride the next generation
         self.last_error = None
         self._inflight = 0                  # generate_reply calls still awaiting
+        self._pending_turn = None           # kid turn that arrived mid-generation
         self._announce = None               # set by agent.py — publishes diag into the room
 
     def bind(self, session) -> None:
@@ -104,6 +105,14 @@ class GeminiVoiceAdapter:
     def send_user_text(self, text: str) -> bool:
         """Typed chat = a real kid turn. Whisper notes ride along as instructions."""
         self._mouth_hold = False
+        if self._inflight > 0:
+            # TURN QUEUE (2026-07-10 calltuns): never DROP a turn because she is
+            # mid-generation — hold the latest and answer the moment the current
+            # line lands. Rule: no kid utterance goes unanswered.
+            self._pending_turn = (f"{self._pending_turn} {text}"
+                                  if getattr(self, "_pending_turn", None) else text)
+            logger.info(f"[gemini] turn QUEUED (gen inflight): '{text[:50]}'")
+            return True
         return self._reply(user_input=text)
 
     def _reply(self, user_input: str) -> bool:
@@ -160,6 +169,12 @@ class GeminiVoiceAdapter:
                 logger.exception("[gemini] generate_reply failed")
             finally:
                 self._inflight -= 1
+                # TURN QUEUE drain: a kid turn arrived while this line was being
+                # made — answer it NOW (latest wins; stale intermediates merged).
+                _p, self._pending_turn = getattr(self, "_pending_turn", None), None
+                if _p and self._inflight == 0:
+                    logger.info(f"[gemini] draining queued turn: '{str(_p)[:50]}'")
+                    self._reply(user_input=_p)
         asyncio.create_task(_go())
         logger.info(f"[EVI->] gemini user turn: '{user_input[:60]}'"
                     + (" (+awareness notes)" if notes else ""))
