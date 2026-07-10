@@ -1593,17 +1593,25 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
     Every nudge is a (stage direction) she voices in her own words."""
     model = getattr(state, "_evi_model", None)
 
-    def nudge(text: str):
-        if model is not None and hasattr(model, "send_user_text"):
-            model.send_user_text(f"({text})")
-            logger.info(f"[FRIEND] stage nudge: {text[:70]}")
-
     async def send(pkt: dict):
         try:
             await room.local_participant.publish_data(
                 json.dumps(pkt).encode("utf-8"), reliable=True)
         except Exception as e:
             logger.warning(f"[FRIEND] packet failed: {e}")
+
+    def stage(decision: str, reason: str):
+        # SMART-INTRO Part 7: every producer decision lands in the session log
+        # with its reason — [STAGE] extend-chat / bring-light / hold — why.
+        logger.info(f"[STAGE] {decision} — {reason[:100]}")
+        asyncio.create_task(send({"kind": "stage-diag", "decision": decision,
+                                  "reason": reason[:140]}))
+
+    def nudge(text: str):
+        if model is not None and hasattr(model, "send_user_text"):
+            model.send_user_text(f"({text})")
+            logger.info(f"[FRIEND] stage nudge: {text[:70]}")
+            stage("nudge", text)
 
     logger.info("[FRIEND] producer backstage — conversation is HERS")
 
@@ -1613,8 +1621,11 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
            and state.ctx.phase in ("intro", "recognition")
            and time.time() - t0 < float(os.getenv("NOVA_FRIEND_CHAT_SEC", "35"))):
         if state.ctx.name and time.time() - t0 > 12.0:
+            stage("bring-light", f"name '{state.ctx.name}' landed + chat beat done ({time.time()-t0:.0f}s in)")
             break   # name landed + a chat beat happened — move toward play
         await asyncio.sleep(0.5)
+    if state.ctx.phase in ("intro", "recognition") and not state.game_done.is_set() and not state.ctx.name:
+        stage("bring-light", f"chat window expired without a name ({time.time()-t0:.0f}s)")
     if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
         return
 
@@ -3581,6 +3592,15 @@ async def entrypoint(ctx: JobContext):
                 state._last_nova_at = time.time()   # FIX 4: silence-driver clock
                 state._typed_reply_pending = 0      # her reply landed — clips unblocked
                 logger.info(f"[SPEAK] Nova said → '{txt}'")
+                # SMART-INTRO Part 7: HER words reach the session log word-for-word
+                # — the browser records [NOVA-SAID] next to [HEARD], so every log
+                # holds the full both-sides dialogue.
+                try:
+                    asyncio.create_task(ctx.room.local_participant.publish_data(
+                        json.dumps({"kind": "nova-said", "text": txt}).encode("utf-8"),
+                        reliable=True))
+                except Exception:
+                    pass
                 _scan_nova_line(state, txt)   # light the organ she named / open the game she called
                 # Save Nova's reply to history — multi-turn memory survives
                 try:
