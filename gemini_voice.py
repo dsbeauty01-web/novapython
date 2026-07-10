@@ -123,7 +123,10 @@ class GeminiVoiceAdapter:
             # up to 6s for air; still blocked → the request dies, logged.
             _st = getattr(self, "_state", None)
             if _st is not None:
-                _friend = os.getenv("NOVA_FRIEND", "0") == "1"
+                # DEFAULT MUST MATCH agent.py _friend_on() ("1" = ON): a "0"
+                # default here left the mouth on the strict gate while the ear
+                # ran friend law — two halves of the voice on different rules.
+                _friend = os.getenv("NOVA_FRIEND", "1") == "1"
                 def _busy():
                     if _friend:
                         # FRIEND MODE: interruptions are native — only a browser
