@@ -3249,8 +3249,13 @@ async def entrypoint(ctx: JobContext):
             # gemini-2.0-flash-live-001 (half-cascade) takes audio input + directed
             # replies without the 1007 and generates faster. NOVA_GEMINI_MODEL env
             # still overrides this default either way.
+            # 2026-07-10 later: gemini-2.0-flash-live-001 is RETIRED (1008 not
+            # found — ListModels on the live key). bidiGenerateContent survivors:
+            # 2.5-native-audio (-latest / 09-2025 / 12-2025), 3.1-flash-live
+            # (ignores generate_reply — unusable), 3.5-live-translate (n/a).
+            # -latest is the only candidate that may have outgrown the 1007.
             _gemini_model = os.getenv("NOVA_GEMINI_MODEL",
-                                      "gemini-2.0-flash-live-001")
+                                      "gemini-2.5-flash-native-audio-latest")
             # STAGE 1 turn cap: prompt law only. A hard max_output_tokens=400
             # SILENCED the first reply of the session (probe 2026-07-09 evening:
             # gen-done 3.13s, zero audio, resend also silent — first turn burns
