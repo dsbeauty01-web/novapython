@@ -552,12 +552,17 @@ class NovaSessionState:
 # ────────────────────────────────────────────────────────────────────────
 class NovaAgent(Agent):
     def __init__(self, state: NovaSessionState):
-        super().__init__(instructions=state.system_prompt())
+        # OPENAI REALTIME (2026-07-10): that plugin takes instructions from the
+        # AGENT (no model-ctor instructions like Gemini) — the voice branch
+        # stashes its built prompt here so personality survives the swap.
+        super().__init__(instructions=(getattr(state, "_voice_prompt_override", None)
+                                       or state.system_prompt()))
         self.state = state
 
     async def refresh_instructions(self):
         """Rebuild instructions based on current state (called each turn)."""
-        new_prompt = self.state.system_prompt()
+        new_prompt = (getattr(self.state, "_voice_prompt_override", None)
+                      or self.state.system_prompt())
         await self.update_instructions(new_prompt)
 
     async def tts_node(self, text, model_settings):
@@ -670,6 +675,11 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 "hume_key_set": bool(os.getenv("HUME_API_KEY")),
                 "lemon_key_set": bool(_lemon_key()),
                 "avatar_pick": os.getenv("NOVA_AVATAR", "lemonslice"),
+                # TRACE-GAP FIX (2026-07-10): these were unprintable from outside
+                "USE_OPENAI": "1" if _openai_on() else os.getenv("USE_OPENAI", "(default)"),
+                "openai_key_fp": _fp(_openai_key()),
+                "NOVA_FRIEND": os.getenv("NOVA_FRIEND", "(default=1)"),
+                "commit": os.getenv("RENDER_GIT_COMMIT", "")[:10],
             }).encode("utf-8"), reliable=True)
         except Exception:
             logger.exception("[env-diag] announce failed")
@@ -1827,6 +1837,26 @@ def _gemini_on() -> bool:
     # Live (Hume credits ran out mid-test, user call: "use it, it's ok for now").
     # Takes precedence over EVI when set; flip back to Hume by unsetting it.
     return os.getenv("USE_GEMINI", "").lower() in ("1", "true", "yes", "on")
+
+
+def _openai_key():
+    """Resolve the OpenAI key from any env spelling (the 'openaai' key on
+    Render — same accommodation as the 'lemonsilce' typo)."""
+    for k in ("OPENAI_API_KEY", "OPENAAI_API_KEY", "OPENAI_KEY",
+              "openaai", "openai", "OPENAAI"):
+        v = os.getenv(k)
+        if v:
+            return v
+    return None
+
+
+def _openai_on() -> bool:
+    # OPENAI REALTIME VOICE (2026-07-10, user call: "switch her voice to openai
+    # voice to voice"): the Gemini live ear proved SLOW (finals 3-5s late) and
+    # LOSSY (truncated names, Japanese hallucination) in real rooms. OpenAI
+    # Realtime rides the SAME AgentSession surface (adapter/gates unchanged).
+    # DEFAULT ON when a key exists; USE_OPENAI=0 = instant rollback to Gemini.
+    return (os.getenv("USE_OPENAI", "1") == "1") and bool(_openai_key())
 
 
 def _friend_on() -> bool:
@@ -3264,21 +3294,42 @@ async def entrypoint(ctx: JobContext):
             evi_prompt += ("\n\nSPEECH LAW (hard rule): say ONE short thing — one or two "
                            "short sentences at most — then STOP completely and wait for "
                            "the child. Never chain two thoughts in one turn.")
-            _tok_cap = os.getenv("NOVA_GEMINI_MAX_TOKENS", "")
-            _llm_kwargs = {
-                "model": _gemini_model,
-                "voice": os.getenv("NOVA_GEMINI_VOICE", "Leda"),
-                "instructions": evi_prompt,
-            }
-            if _tok_cap.isdigit():
-                _llm_kwargs["max_output_tokens"] = int(_tok_cap)
-            session_kwargs = {
-                "llm": google_rt.realtime.RealtimeModel(**_llm_kwargs),
-                "allow_interruptions": True,
-            }
-            logger.info(f"[nova-gemini] USE_GEMINI=1 → voice = Gemini Live "
-                        f"({_gemini_model}, "
-                        f"voice {os.getenv('NOVA_GEMINI_VOICE', 'Leda')})")
+            if _openai_on():
+                # OPENAI REALTIME (2026-07-10): same adapter, same gates — only
+                # the llm swaps. The plugin reads OPENAI_API_KEY; normalize
+                # whatever spelling the key landed under on Render.
+                _k = _openai_key()
+                if os.getenv("OPENAI_API_KEY") != _k:
+                    os.environ["OPENAI_API_KEY"] = _k
+                _oai_model = os.getenv("NOVA_OPENAI_MODEL", "gpt-realtime")
+                _oai_voice = os.getenv("NOVA_OPENAI_VOICE", "marin")
+                # OpenAI realtime takes instructions from the AGENT, not the
+                # model ctor — override NovaAgent's prompt with the voice prompt
+                # (friend prompt included) so her personality survives the swap.
+                state._voice_prompt_override = evi_prompt
+                session_kwargs = {
+                    "llm": openai_plugin.realtime.RealtimeModel(
+                        model=_oai_model, voice=_oai_voice),
+                    "allow_interruptions": True,
+                }
+                logger.info(f"[nova-openai] USE_OPENAI → voice = OpenAI Realtime "
+                            f"({_oai_model}, voice {_oai_voice}); USE_OPENAI=0 rolls back to Gemini")
+            else:
+                _tok_cap = os.getenv("NOVA_GEMINI_MAX_TOKENS", "")
+                _llm_kwargs = {
+                    "model": _gemini_model,
+                    "voice": os.getenv("NOVA_GEMINI_VOICE", "Leda"),
+                    "instructions": evi_prompt,
+                }
+                if _tok_cap.isdigit():
+                    _llm_kwargs["max_output_tokens"] = int(_tok_cap)
+                session_kwargs = {
+                    "llm": google_rt.realtime.RealtimeModel(**_llm_kwargs),
+                    "allow_interruptions": True,
+                }
+                logger.info(f"[nova-gemini] USE_GEMINI=1 → voice = Gemini Live "
+                            f"({_gemini_model}, "
+                            f"voice {os.getenv('NOVA_GEMINI_VOICE', 'Leda')})")
         except Exception as e:
             logger.exception(f"[nova-gemini] init FAILED — refusing silent fallback: {e}")
             raise
@@ -3415,7 +3466,10 @@ async def entrypoint(ctx: JobContext):
                 # reply. Gemini-only — Hume EVI replies to voice natively. Skips
                 # mid-song (game gate owns it) and while a generation is in flight.
                 try:
-                    if (_gemini_on() and _v2v_on()
+                    # OPENAI (2026-07-10): its realtime model auto-replies to
+                    # speech natively — a directed reply on top = DOUBLE voice.
+                    # HEAR→REPLY is the Gemini-deafness workaround only.
+                    if (_gemini_on() and _v2v_on() and not _openai_on()
                             and getattr(state.ctx, "phase", "") != "dance"):
                         _vm2 = getattr(state, "_evi_model", None)
                         if _vm2 is not None and hasattr(_vm2, "send_user_text"):
