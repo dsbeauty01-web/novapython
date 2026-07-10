@@ -3364,6 +3364,22 @@ async def entrypoint(ctx: JobContext):
                     state.kid_spoke.set()
                 except Exception:
                     pass
+                # GEMINI HEAR→REPLY (2026-07-10): the 2.5 native-audio live model
+                # TRANSCRIBES kid speech but never auto-replies to it (probe-proven;
+                # same silent class as the 3.1 generate_reply bug). Voice turns ride
+                # the PROVEN typed-chat path instead: final transcript → directed
+                # reply. Gemini-only — Hume EVI replies to voice natively. Skips
+                # mid-song (game gate owns it) and while a generation is in flight.
+                try:
+                    if (_gemini_on() and _v2v_on()
+                            and getattr(state.ctx, "phase", "") != "dance"):
+                        _vm2 = getattr(state, "_evi_model", None)
+                        if (_vm2 is not None and hasattr(_vm2, "send_user_text")
+                                and getattr(_vm2, "_inflight", 0) == 0):
+                            _vm2.send_user_text(text)
+                            logger.info(f"[HEAR→REPLY] directed reply fired for voice turn '{text[:50]}'")
+                except Exception:
+                    logger.exception("[HEAR→REPLY] failed")
             else:
                 logger.info(f"[HEAR] interim … '{text[:60]}'")
     except Exception as e:
