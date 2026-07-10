@@ -3376,8 +3376,35 @@ async def entrypoint(ctx: JobContext):
             err = getattr(ev, "error", None)
             state.bump("errors")
             logger.error(f"[STT-OR-AGENT-ERROR] {err}")
+            # SESSION-DEATH DEBUG (2026-07-10): errors must be visible to an
+            # external probe — the worker's logs are unreachable from outside.
+            try:
+                asyncio.create_task(ctx.room.local_participant.publish_data(
+                    json.dumps({"kind": "err-diag", "err": str(err)[:300],
+                                "recoverable": bool(getattr(ev, "recoverable", None))}).encode("utf-8"),
+                    reliable=True))
+            except Exception:
+                pass
     except Exception:
         pass
+
+    # SESSION-DEATH DEBUG (2026-07-10): "AgentSession isn't running" mid-session
+    # means the session CLOSED under us — announce when + why into the room.
+    try:
+        @session.on("close")
+        def _on_session_close(ev):
+            reason = getattr(ev, "reason", None)
+            err = getattr(ev, "error", None)
+            logger.error(f"[SESSION-CLOSE] reason={reason} err={err}")
+            try:
+                asyncio.create_task(ctx.room.local_participant.publish_data(
+                    json.dumps({"kind": "close-diag", "reason": str(reason),
+                                "err": str(err)[:300]}).encode("utf-8"),
+                    reliable=True))
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[hook] close event unavailable: {e}")
 
     try:
         @session.on("agent_state_changed")
