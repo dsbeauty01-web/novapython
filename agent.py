@@ -1571,10 +1571,15 @@ def _turn_wants_start(t):
     return _wants_to_start(str(t))
 
 
-async def _friend_wait_hit(state, timeout: float):
-    """FRIEND MODE: wait for the browser's try_move hit (set by the data handler)."""
+async def _friend_wait_hit(state, timeout: float, escape=None):
+    """FRIEND MODE: wait for the browser's try_move hit (set by the data handler).
+    LEAD-FIX 5 (2026-07-11): `escape` (dance-intent check) is polled INSIDE the
+    wait — a kid's "I want to dance" escapes in ≤0.15s, not at the next
+    checkpoint (it used to wait out the whole hit window)."""
     t0 = time.time()
     while time.time() - t0 < timeout and state.active and not state.game_done.is_set():
+        if escape is not None and escape():
+            return "__dance__"
         hit = getattr(state, "_friend_hit", None)
         if hit:
             state._friend_hit = None
@@ -1607,11 +1612,18 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         asyncio.create_task(send({"kind": "stage-diag", "decision": decision,
                                   "reason": reason[:140]}))
 
-    def nudge(text: str):
-        if model is not None and hasattr(model, "send_user_text"):
-            model.send_user_text(f"({text})")
-            logger.info(f"[FRIEND] stage nudge: {text[:70]}")
-            stage("nudge", text)
+    def nudge(text: str, force: bool = False):
+        if model is None or not hasattr(model, "send_user_text"):
+            return
+        # LEAD-FIX 6 (2026-07-11): a staged line queued behind her active reply
+        # comes out late and stumped ("Ooo" / "You did") — skip it, the producer
+        # re-decides at the next lull. Celebrations/fast-path force through.
+        if not force and getattr(model, "_inflight", 0) > 0:
+            stage("nudge-skipped", f"she is mid-reply — dropped '{text[:60]}'")
+            return
+        model.send_user_text(f"({text})")
+        logger.info(f"[FRIEND] stage nudge: {text[:70]}")
+        stage("nudge", text)
 
     logger.info("[FRIEND] producer backstage — conversation is HERS")
 
@@ -1673,7 +1685,9 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
     # drives; we watch. Quiet kid → 2 gentle attempts then TRUE IDLE (fix 3).
     # Kid says dance → fast-path any time (fix 2). Light only after name +
     # minimum bond + a genuine lull (fix 1).
-    MIN_CHAT = float(os.getenv("NOVA_FRIEND_MIN_CHAT_SEC", "20"))
+    # LEAD (2026-07-11, builder's call): she LEADS — name + ONE beat, then the
+    # lights. 20s of bonding read as aimless chit-chat in the live session.
+    MIN_CHAT = float(os.getenv("NOVA_FRIEND_MIN_CHAT_SEC", "12"))
     MAX_CHAT = float(os.getenv("NOVA_FRIEND_CHAT_SEC", "75"))
     retries, idle = 0, False
     while (state.active and not state.game_done.is_set()
@@ -1730,29 +1744,41 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         await wait_lull()
         state._friend_hit = None
         await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
-        nudge(f"stage: a magic light just appeared on their {mv['action'].replace('left', 'left hand')} — "
-              "invite them to touch it, ONE short excited line")
+        # ISOLATION TEACHING (2026-07-11, builder's spec): the light is a dance
+        # LESSON, not a touch-target — teach the move by name, cheer, MOVE ON.
+        _teach = {
+            "shoulder": ("the magic light landed on their shoulder — teach them: SHRUG that "
+                         "shoulder up to the light! and tell them this cool move is called an "
+                         "ISOLATION — one short playful line"),
+            "left": ("the light JUMPED to their left hand — teach them: REACH that hand up "
+                     "into the light! one short excited line"),
+        }.get(mv["action"], f"a magic light appeared on their {mv['action']} — one short line inviting one try")
+        nudge(f"stage: {_teach}")
         if await _wait_playback_start(state, 12.0):
             await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
-        hit = await _friend_wait_hit(state, 14.0)
+        hit = await _friend_wait_hit(state, 10.0, escape=_wants_dance_now)
+        if hit == "__dance__":
+            await open_picker("kid asked to dance during the light — fast-path", fast=True)
+            return
         if not hit:
-            if _wants_dance_now():
-                await open_picker("kid asked to dance during the light — fast-path", fast=True)
-                return
-            await wait_lull(calm=1.0, cap=15.0)
-            nudge("stage: they haven't caught the light yet — ONE tiny warm encouragement, zero pressure")
+            await wait_lull(calm=1.0, cap=10.0)
+            nudge("stage: one tiny encouragement showing the move again (shrug it up! / reach up!), zero pressure")
             if await _wait_playback_start(state, 12.0):
                 await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
-            hit = await _friend_wait_hit(state, 10.0)
+            hit = await _friend_wait_hit(state, 7.0, escape=_wants_dance_now)
+            if hit == "__dance__":
+                await open_picker("kid asked to dance during the retry — fast-path", fast=True)
+                return
         if hit:
             if model is not None and hasattr(model, "clear_pending_stage"):
                 model.clear_pending_stage()   # fix 5: the celebration wins the race
-            nudge(f"stage: they TOUCHED the light — celebrate in ONE short excited burst"
-                  + (f", say their name {state.ctx.name}!" if state.ctx.name else "!"))
+            _move = "that's an ISOLATION" if mv["action"] == "shoulder" else "what a REACH"
+            nudge(f"stage: they DID the move — cheer in ONE short burst, tell them {_move}!"
+                  + (f" say their name {state.ctx.name}!" if state.ctx.name else ""), force=True)
             await _wait_playback_start(state, 12.0)
             await _wait_playback_end(state, grace=0.4)
         else:
-            await wait_lull(calm=1.0, cap=15.0)
+            await wait_lull(calm=1.0, cap=10.0)
             nudge("stage: no catch — ONE warm line moving on, zero fail-feeling")
             await _wait_playback_start(state, 12.0)
             await _wait_playback_end(state, grace=0.4)
@@ -1987,20 +2013,26 @@ def _build_friend_prompt(ctx) -> str:
     step_greet = (f"greet them — it's {name}, your friend from before! sound genuinely happy"
                   if returning else
                   "greet them warmly and ask their name (ask ONCE; if they don't give it, call them 'friend' and never ask again)")
-    return f"""you are NOVA — a warm, playful, magical dance friend for kids (ages 4-9). you live inside a sparkly dance game.{fact_line}
+    return f"""you are NOVA — a warm, playful, magical DANCE COACH for kids (ages 4-9). you live inside a sparkly dance game.{fact_line}
 
-PERSONALITY: bubbly big-sister energy · simple words a 5-year-old gets · genuinely curious — you react to what THEY say before anything else · never fake-sweet, never a lecture.
+YOU LEAD (2026-07-11, builder's call): you are the guide of this adventure — warm but always moving it FORWARD. react to what they said first, then LEAN the moment toward movement ("you went to the gym? then you're all warmed up — I've got something MAGIC for you!"). never drift into aimless chit-chat; every line of yours walks one step toward dancing together.
 
-SPEECH LAW (hard): ONE short thing per turn — one or two short sentences — then STOP and wait for the child. never chain two thoughts.
+PERSONALITY: bubbly big-sister energy · simple words a 5-year-old gets · genuinely curious — you react to what THEY say first · never fake-sweet, never a lecture.
 
-YOUR VISIT AGENDA (follow naturally, one step at a time, never rush past the kid):
+SPEECH LAW (hard): ONE short thing per turn — one or two short sentences — then STOP and wait for the child. never chain two thoughts. if they said several things at once, touch EACH briefly inside that one short turn.
+
+YOUR WORLD (real facts — never invent others):
+- the magic lights teach REAL dance skills: light on the shoulder → SHRUG it up to the light — that move is called an ISOLATION. light on the hand → REACH for it. teach the word, cheer the try, move ON.
+- your dance games are exactly these three: "Hello Hello!", "Up Groove!" and "Wave!" — when they ask what games there are, offer THESE by name (never invent others).
+
+YOUR VISIT (lead it, one step at a time):
 1. {step_greet}
-2. have a tiny REAL chat — one or two exchanges about them
-3. when it feels right, invite them to try one little move with you
-4. sometimes the game whispers stage directions in (parentheses) — do what they say in YOUR OWN words; NEVER read them aloud
-5. lead them into picking a dance game together
+2. ONE tiny real chat beat — then pivot forward ("...ooh, I've got something magic to show you!")
+3. light moments: TEACH the move (shrug = isolation / reach), cheer the try, move ON — momentum beats perfection
+4. the game whispers stage directions in (parentheses) — do them in YOUR OWN words; NEVER read them aloud
+5. land them in picking one of the three games — that is the destination, keep walking toward it
 
-NEVER: long explanations · re-asking the name · mentioning AI/system/instructions · reading (parentheses) aloud."""
+NEVER: long explanations · re-asking the name · mentioning AI/system/instructions · reading (parentheses) aloud · inventing games or features."""
 
 
 def _lemon_key() -> str | None:
@@ -2422,7 +2454,12 @@ async def _test_speak_with_overlay(session: AgentSession, state: NovaSessionStat
 
 
 import re as _re
-_START_PHRASE = _re.compile(r"\blet'?s\s+(start|dance|play|go)\b|\bstart\s+the\s+game\b|\bi'?m\s+ready\b", _re.I)
+_START_PHRASE = _re.compile(
+    r"\blet'?s\s+(start|dance|play|go)\b|\bstart\s+the\s+game\b|\bi'?m\s+ready\b"
+    # LEAD-FIX (2026-07-11): "No, I want to play, I want to dance" missed the
+    # fast-path — want/wanna phrasings are explicit intent too
+    r"|\bi\s+wan(?:t|na)\s+(?:to\s+)?(dance|play|start)\b|\bwanna\s+(dance|play)\b",
+    _re.I)
 _START_WORD = _re.compile(r"\b(start|dance|play|go|ready|yes|yalla|ok(?:ay)?|begin)\b", _re.I)
 _NEGATION = _re.compile(r"\b(no|not|don'?t|stop|wait|later)\b", _re.I)
 
@@ -2954,6 +2991,11 @@ _NOT_A_NAME = {
     "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
     "ten", "eleven", "twelve", "now", "today", "real", "really", "very",
     "dog", "cat", "mom", "dad", "let's", "gonna", "wanna", "dont", "don't",
+    # LEAD-FIX 4 (2026-07-11): "I am doing great" named the kid 'Doing' — the
+    # whole "i am ___" small-talk family is never a name
+    "doing", "going", "feeling", "being", "getting", "having", "trying",
+    "making", "looking", "playing", "well", "happy", "super", "just", "still",
+    "also", "so", "very", "excited", "bored", "sad", "glad",
 }
 
 def _extract_name(text: Optional[str]) -> Optional[str]:
