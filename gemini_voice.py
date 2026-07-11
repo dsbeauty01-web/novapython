@@ -38,6 +38,7 @@ class GeminiVoiceAdapter:
         self.last_error = None
         self._inflight = 0                  # generate_reply calls still awaiting
         self._pending_turn = None           # kid turn that arrived mid-generation
+        self._pending_multi = False         # 2+ turns merged while queued
         self._announce = None               # set by agent.py — publishes diag into the room
 
     def bind(self, session) -> None:
@@ -109,11 +110,24 @@ class GeminiVoiceAdapter:
             # TURN QUEUE (2026-07-10 calltuns): never DROP a turn because she is
             # mid-generation — hold the latest and answer the moment the current
             # line lands. Rule: no kid utterance goes unanswered.
-            self._pending_turn = (f"{self._pending_turn} {text}"
-                                  if getattr(self, "_pending_turn", None) else text)
+            if getattr(self, "_pending_turn", None):
+                self._pending_turn = f"{self._pending_turn} {text}"
+                self._pending_multi = True   # PERSONA-FIX 6: 2+ merged turns
+            else:
+                self._pending_turn = text
             logger.info(f"[gemini] turn QUEUED (gen inflight): '{text[:50]}'")
             return True
         return self._reply(user_input=text)
+
+    def clear_pending_stage(self) -> None:
+        """PERSONA-FIX 5 (2026-07-10): a celebration must WIN the race against an
+        already-queued staged line — drop the pending turn if it is purely a
+        (stage direction); kid words are never dropped."""
+        p = getattr(self, "_pending_turn", None)
+        if p and p.lstrip().startswith("("):
+            logger.info(f"[gemini] pending STAGED turn cleared for a preempting line: '{p[:50]}'")
+            self._pending_turn = None
+            self._pending_multi = False
 
     def _reply(self, user_input: str) -> bool:
         s = self._session
@@ -172,7 +186,14 @@ class GeminiVoiceAdapter:
                 # TURN QUEUE drain: a kid turn arrived while this line was being
                 # made — answer it NOW (latest wins; stale intermediates merged).
                 _p, self._pending_turn = getattr(self, "_pending_turn", None), None
+                _multi, self._pending_multi = getattr(self, "_pending_multi", False), False
                 if _p and self._inflight == 0:
+                    if _multi:
+                        # PERSONA-FIX 6: rapid-fire questions collapsed into one
+                        # answer ("are you real??" was dropped) — tell her to
+                        # touch EACH thing, still in one short warm turn.
+                        self._ctx_notes.append("they said several things at once — "
+                                               "answer EACH one briefly, one warm line total")
                     logger.info(f"[gemini] draining queued turn: '{str(_p)[:50]}'")
                     self._reply(user_input=_p)
         asyncio.create_task(_go())

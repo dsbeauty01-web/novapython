@@ -1615,29 +1615,114 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
 
     logger.info("[FRIEND] producer backstage — conversation is HERS")
 
-    # 1. let the greeting + name + real chat happen (she drives; we only watch)
+    # ── SMART-INTRO PRIME LAW (2026-07-10 fix list, approved): her next line
+    # comes from the kid's LAST line — never from a schedule. The producer acts
+    # ONLY in the quiet between exchanges. These helpers are the whole law:
     t0 = time.time()
+
+    def _kid_last() -> float:
+        return max(getattr(state, "_last_kid_at", 0) or 0,
+                   getattr(state, "last_kid_speech_at", 0) or 0)
+
+    def _wants_dance_now() -> bool:
+        t = str(getattr(state, "last_kid_text", "") or "")
+        return bool(t) and _kid_last() > t0 and _wants_to_start(t)
+
+    async def wait_lull(calm: float = 1.5, cap: float = 30.0) -> bool:
+        """QUIET = her audio not playing + no reply being made + the kid's last
+        line already answered + `calm`s of stillness. Producer acts only here."""
+        s0 = time.time()
+        while time.time() - s0 < cap and state.active:
+            infl = getattr(model, "_inflight", 0) if model is not None else 0
+            unanswered = _kid_last() > (getattr(state, "_last_nova_at", 0) or 0)
+            if not _audio_playing(state) and not infl and not unanswered:
+                q0 = time.time()
+                quiet = True
+                while time.time() - q0 < calm:
+                    if _audio_playing(state) or _kid_last() > q0:
+                        quiet = False
+                        break
+                    await asyncio.sleep(0.1)
+                if quiet:
+                    return True
+            await asyncio.sleep(0.15)
+        return False
+
+    async def open_picker(reason: str, fast: bool = False):
+        state._dance_invited = True
+        stage("picker", reason)
+        if fast:
+            # FAST-PATH (fix 2): the kid ASKED — picker opens NOW (≤5s law),
+            # her hype line rides on top while it appears.
+            await send({"kind": "go-picker"})
+            nudge("stage: they want to dance NOW — one short excited YES-let's-go line")
+        else:
+            nudge("stage: time to dance — ONE excited line inviting them to pick a dance game with you")
+            await _wait_playback_start(state, 12.0)
+            await _wait_playback_end(state, grace=0.6)
+            await send({"kind": "go-picker"})
+        logger.info("[FRIEND] picker opened — game phases are packet-driven from here")
+
+    # 1. THE BONDING WINDOW (SMART-INTRO Part 2+3): pure conversation. She
+    # drives; we watch. Quiet kid → 2 gentle attempts then TRUE IDLE (fix 3).
+    # Kid says dance → fast-path any time (fix 2). Light only after name +
+    # minimum bond + a genuine lull (fix 1).
+    MIN_CHAT = float(os.getenv("NOVA_FRIEND_MIN_CHAT_SEC", "20"))
+    MAX_CHAT = float(os.getenv("NOVA_FRIEND_CHAT_SEC", "75"))
+    retries, idle = 0, False
     while (state.active and not state.game_done.is_set()
-           and state.ctx.phase in ("intro", "recognition")
-           and time.time() - t0 < float(os.getenv("NOVA_FRIEND_CHAT_SEC", "35"))):
-        if state.ctx.name and time.time() - t0 > 12.0:
-            stage("bring-light", f"name '{state.ctx.name}' landed + chat beat done ({time.time()-t0:.0f}s in)")
-            break   # name landed + a chat beat happened — move toward play
-        await asyncio.sleep(0.5)
-    if state.ctx.phase in ("intro", "recognition") and not state.game_done.is_set() and not state.ctx.name:
-        stage("bring-light", f"chat window expired without a name ({time.time()-t0:.0f}s)")
+           and state.ctx.phase in ("intro", "recognition")):
+        el = time.time() - t0
+        if _wants_dance_now():
+            await open_picker("kid asked to dance mid-chat — fast-path", fast=True)
+            return
+        k = _kid_last()
+        if k > t0:  # the kid has engaged at least once
+            if idle:
+                idle = False
+                retries = 0
+                stage("resume", "kid is back after idle — warm re-engage rides her next line")
+                if model is not None and hasattr(model, "push_context"):
+                    model.push_context("they went quiet and just came back — be extra "
+                                       "warm and glad, zero pressure, pick up gently")
+            if state.ctx.name and el > MIN_CHAT and time.time() - k > 4.0:
+                if await wait_lull():
+                    stage("bring-light", f"name '{state.ctx.name}' + bond ({el:.0f}s) + lull")
+                    break
+            if el > MAX_CHAT and await wait_lull():
+                stage("bring-light", f"max chat window ({el:.0f}s) — moving at a lull")
+                break
+        else:  # silence since her greet (fix 3 — the quiet-kid protocol)
+            if idle:
+                await asyncio.sleep(0.3)
+                continue    # TRUE IDLE: glow only, zero lines, wait for the kid
+            if retries == 0 and el > 12.0:
+                retries = 1
+                stage("silence-retry-1", f"no reply {el:.0f}s — one gentle re-ask")
+                nudge("stage: they haven't answered yet — ONE gentle, warm little re-ask, super short")
+            elif retries == 1 and el > 24.0:
+                retries = 2
+                stage("silence-retry-2", f"still quiet {el:.0f}s — one softer attempt")
+                nudge("stage: still quiet — ONE even softer, tinier line, no pressure at all")
+            elif retries == 2 and el > 34.0:
+                idle = True
+                stage("idle", "2 attempts done — going quiet (glow only) until the kid returns")
+        await asyncio.sleep(0.4)
     if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
         return
 
-    # 2. THE LIGHT CHALLENGE — lights + SFX are ours, the words are hers
+    # 2. THE LIGHT CHALLENGE — lights + SFX are ours, the words are hers.
+    # Every producer entry passes wait_lull (fix 1). Light ON first, RE-PULSE
+    # the moment her line starts playing. Celebration PREEMPTS any queued
+    # staged line (fix 5). Dance-ask escapes the chain any time (fix 2).
     for mv in INTRO_CHALLENGE:
         if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
             return
+        if _wants_dance_now():
+            await open_picker("kid asked to dance mid-challenge — fast-path", fast=True)
+            return
+        await wait_lull()
         state._friend_hit = None
-        # CALLTUNS ORDER (2026-07-10, user spec): light ON first — the kid must
-        # SEE it before she mentions it. Then, the moment her line actually
-        # starts playing (gen takes 2-10s; the 2.6s pulse ring would be long
-        # dead), RE-PULSE so light + words land together.
         await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
         nudge(f"stage: a magic light just appeared on their {mv['action'].replace('left', 'left hand')} — "
               "invite them to touch it, ONE short excited line")
@@ -1645,29 +1730,31 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
         hit = await _friend_wait_hit(state, 14.0)
         if not hit:
+            if _wants_dance_now():
+                await open_picker("kid asked to dance during the light — fast-path", fast=True)
+                return
+            await wait_lull(calm=1.0, cap=15.0)
             nudge("stage: they haven't caught the light yet — ONE tiny warm encouragement, zero pressure")
             if await _wait_playback_start(state, 12.0):
                 await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
             hit = await _friend_wait_hit(state, 10.0)
         if hit:
+            if model is not None and hasattr(model, "clear_pending_stage"):
+                model.clear_pending_stage()   # fix 5: the celebration wins the race
             nudge(f"stage: they TOUCHED the light — celebrate in ONE short excited burst"
                   + (f", say their name {state.ctx.name}!" if state.ctx.name else "!"))
+            await _wait_playback_start(state, 12.0)
             await _wait_playback_end(state, grace=0.4)
         else:
+            await wait_lull(calm=1.0, cap=15.0)
             nudge("stage: no catch — ONE warm line moving on, zero fail-feeling")
+            await _wait_playback_start(state, 12.0)
             await _wait_playback_end(state, grace=0.4)
 
-    # 3. PICKER — she invites, we open it as her line lands
+    # 3. PICKER — she invites at a lull, we open it as her line lands
     if state.ctx.phase in ("intro", "recognition") and not state.game_done.is_set():
-        state._dance_invited = True
-        nudge("stage: time to dance — ONE excited line inviting them to pick a dance game with you")
-        # CALLTUNS (2026-07-10, user spec): the picker must open AFTER her
-        # invite has been HEARD. _wait_playback_end alone returned instantly
-        # (gen still in flight → no audio yet) → picker opened mid-question.
-        await _wait_playback_start(state, 12.0)
-        await _wait_playback_end(state, grace=0.6)
-        await send({"kind": "go-picker"})
-        logger.info("[FRIEND] picker opened — game phases are packet-driven from here")
+        await wait_lull(calm=1.0, cap=15.0)
+        await open_picker("challenge done — inviting to dance")
 
 
 async def run_intro_turns(session: AgentSession, state: NovaSessionState,
@@ -2495,6 +2582,10 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
     # STRAIGHT to her (interruptions are native). The producer only records:
     # name side-capture + memory + facts, all backstage.
     if _friend_on():
+        # PERSONA-FIX 2 (2026-07-10): typed words feed the same intent signals
+        # as voice — the producer's dance fast-path reads last_kid_text.
+        state.last_kid_text = text
+        state.last_kid_speech_at = time.time()
         if not state.ctx.name:
             _nm = _extract_name(text)
             if _nm:
@@ -2851,6 +2942,12 @@ _NOT_A_NAME = {
     "ready", "start", "lets", "dance", "dancing", "dancer", "sure", "fine",
     "please", "thanks", "thank", "sorry", "friend", "again", "come", "wow",
     "superstar", "champion", "awesome", "great", "fantastic",
+    # PERSONA-FIX 4 (2026-07-10): verbs/numbers the old scan mistook for names
+    # ("I have a dog" → 'Have'; "I'm six" → 'Six'; "LET'S DANCE NOW" → "Let's")
+    "have", "has", "had", "got", "get", "want", "like", "love", "need", "know",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "now", "today", "real", "really", "very",
+    "dog", "cat", "mom", "dad", "let's", "gonna", "wanna", "dont", "don't",
 }
 
 def _extract_name(text: Optional[str]) -> Optional[str]:
@@ -2868,8 +2965,14 @@ def _extract_name(text: Optional[str]) -> Optional[str]:
         # No explicit pattern: a QUESTION is never a name ("where am I?", "what?")
         if "?" in t:
             return None
-        words = re.findall(r"[A-Za-z][A-Za-z\-']+", t)
+        # PERSONA-FIX 4 (2026-07-10): count 1-letter words too — the old scan
+        # dropped "I"/"a", so "I have a dog" read as 2 words and named the kid
+        # 'Have'. Sentence length must be judged on the REAL sentence.
+        words = re.findall(r"[A-Za-z][A-Za-z\-']*", t)
         if not words or len(words) > 3:
+            return None
+        words = [w for w in words if len(w) > 1]
+        if not words:
             return None
         # the first word must not be a question/command/filler word
         if words[0].lower() in _NOT_A_NAME:
