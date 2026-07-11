@@ -1642,9 +1642,16 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         # answering ordinary chat must NOT skip the intro (persona A re-run:
         # "yes!" to 'how do you feel?' opened the picker). Short bursts still
         # fast-path where they belong: after HER dance invite (game-push path).
-        if not t or _kid_last() <= t0 or _NEGATION.search(t):
+        if not t or _kid_last() <= t0:
             return False
-        return bool(_START_PHRASE.search(t))
+        if not _START_PHRASE.search(t):
+            return False
+        # LEAD-FIX (2026-07-11): "No, I want to dance" — the 'No' rejects the
+        # LIGHT, not the dancing. Only a negation aimed at dancing itself vetoes.
+        import re as _re2
+        if _re2.search(r"(?:don'?t|not|stop|no)\s+(?:wanna\s+|want\s+to\s+)?(?:danc|play|start)", t, _re2.I):
+            return False
+        return True
 
     async def wait_lull(calm: float = 1.5, cap: float = 30.0) -> bool:
         """QUIET = her audio not playing + no reply being made + the kid's last
