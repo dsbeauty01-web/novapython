@@ -674,7 +674,7 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 "google_key_fp": _fp(os.getenv("GOOGLE_API_KEY")),
                 "hume_key_set": bool(os.getenv("HUME_API_KEY")),
                 "lemon_key_set": bool(_lemon_key()),
-                "avatar_pick": os.getenv("NOVA_AVATAR", "lemonslice"),
+                "avatar_pick": os.getenv("NOVA_AVATAR", "pod"),
                 # TRACE-GAP FIX (2026-07-10): these were unprintable from outside
                 "USE_OPENAI": "1" if _openai_on() else os.getenv("USE_OPENAI", "(default)"),
                 "openai_key_fp": _fp(_openai_key()),
@@ -1042,6 +1042,12 @@ def _ear_should_be_open(state) -> bool:
     detection + interruptions carry it, like every real V2V app. The ear only
     closes for the song."""
     if not getattr(state, "_revealed", False):
+        return False
+    # POD LIPSYNC ECHO GUARD (2026-07-11): her voice exits the kid's SPEAKERS
+    # via the FLV stream — browser AEC cannot cancel MSE audio (proven scar).
+    # Deaf while her voice is still audibly playing (+margin), even in friend
+    # mode; otherwise she hears herself → ghost turns.
+    if getattr(state, "_pod_audible_until", 0.0) > time.time():
         return False
     if _friend_on():
         return getattr(state.ctx, "phase", "intro") != "dance"
@@ -1619,6 +1625,18 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         # thank_you). Widget absent / pod down → the packet is simply ignored.
         # NOVA_GESTURES=0 kills.
         if os.getenv("NOVA_GESTURES", "1") != "1":
+            return
+        # ORDER-LIPSYNC: move clips FREEZE the lips (whole-frame replacement) —
+        # a gesture may fire only once her mouth is free (+0.25s), never over
+        # speech. _pod_audible_until covers push window + FLV delay.
+        aud = getattr(state, "_pod_audible_until", 0.0)
+        delay = max(0.0, aud - time.time())
+        if delay > 0.05:
+            async def _after_mouth():
+                await asyncio.sleep(delay + 0.25)
+                stage("gesture", f"{name} (held {delay:.1f}s for her mouth)")
+                await send({"kind": "gesture", "name": name})
+            asyncio.create_task(_after_mouth())
             return
         stage("gesture", name)
         asyncio.create_task(send({"kind": "gesture", "name": name}))
@@ -3793,11 +3811,47 @@ async def entrypoint(ctx: JobContext):
     # continues as voice-only. Her audio publishes directly via RoomIO. The browser
     # reveals with a static face when only audio arrives. She must never fully die
     # because the face vendor is down.
+    _avatar_pick = os.getenv("NOVA_AVATAR", "pod").lower()
     if voice_only:
         # ?voiceonly session (room metadata): Nova is VOICE-ONLY by request — no
         # avatar, no credits burned. Audio publishes via RoomIO; browser shows static face.
         logger.info("[nova-v207] step 2: VOICE-ONLY session (requested) → avatar skipped")
-    elif _lemon_key() and os.getenv("NOVA_AVATAR", "lemonslice").lower() != "runway":
+    elif _avatar_pick == "pod":
+        # POD AVATAR — ORDER-LIPSYNC-TOPQUALITY (2026-07-11, builder's decision:
+        # perfect lips > instant voice). Her voice streams to the self-hosted
+        # engine (/humanaudio via the bridge relay); the floor widget's FLV is
+        # her mouth AND her voice — NO room audio is published (double audio =
+        # echo + 2s-apart double voice). NOVA_AVATAR=lemonslice/runway reverts.
+        try:
+            from pod_voice import PodVoiceOutput
+            session.output.audio = PodVoiceOutput(state)
+            state._avatar_on = True     # face on → every line live (lips move)
+            state._pod_avatar = True
+            logger.info("[nova-v207] step 2: POD avatar — voice routed to the engine (frame-level lipsync)")
+
+            async def _announce_pod_mode():
+                # tell the browser the widget is her mouth+voice now (unmute it,
+                # don't wait for a room audio track)
+                for _ in range(6):
+                    await asyncio.sleep(2.0)
+                    try:
+                        await ctx.room.local_participant.publish_data(
+                            json.dumps({"kind": "avatar-mode", "mode": "pod"}).encode("utf-8"),
+                            reliable=True)
+                    except Exception:
+                        pass
+            asyncio.create_task(_announce_pod_mode())
+
+            async def _pod_ear_tick():
+                # the echo guard closes the ear by TIME — something must also
+                # re-open it when the window passes (events alone won't fire)
+                while state.active:
+                    _ear_update(state, "pod audible tick")
+                    await asyncio.sleep(0.5)
+            asyncio.create_task(_pod_ear_tick())
+        except Exception as e:
+            logger.exception(f"[nova-v207] POD voice bind FAILED → room voice fallback: {e}")
+    elif _lemon_key() and _avatar_pick != "runway":
         # LEMONSLICE AVATAR (2026-07-09, user call: "$10 on LemonSlice, Runway on
         # standby"). Same LiveKit avatar contract as Runway — her voice re-routes
         # through the avatar participant, which lip-syncs and publishes video.
