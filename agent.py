@@ -1626,7 +1626,13 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
 
     def _wants_dance_now() -> bool:
         t = str(getattr(state, "last_kid_text", "") or "")
-        return bool(t) and _kid_last() > t0 and _wants_to_start(t)
+        # EXPLICIT phrases only ("let's dance", "I wanna play") — a bare "yes!"
+        # answering ordinary chat must NOT skip the intro (persona A re-run:
+        # "yes!" to 'how do you feel?' opened the picker). Short bursts still
+        # fast-path where they belong: after HER dance invite (game-push path).
+        if not t or _kid_last() <= t0 or _NEGATION.search(t):
+            return False
+        return bool(_START_PHRASE.search(t))
 
     async def wait_lull(calm: float = 1.5, cap: float = 30.0) -> bool:
         """QUIET = her audio not playing + no reply being made + the kid's last
@@ -3407,7 +3413,9 @@ async def entrypoint(ctx: JobContext):
             # audio started). NOVA_GEMINI_MAX_TOKENS env re-arms a cap if wanted.
             evi_prompt += ("\n\nSPEECH LAW (hard rule): say ONE short thing — one or two "
                            "short sentences at most — then STOP completely and wait for "
-                           "the child. Never chain two thoughts in one turn.")
+                           "the child. Never chain two thoughts in one turn. If the child "
+                           "said several things at once, touch EACH of them briefly inside "
+                           "that one short turn — never skip one of their questions.")
             if _openai_on():
                 # OPENAI REALTIME (2026-07-10): same adapter, same gates — only
                 # the llm swaps. The plugin reads OPENAI_API_KEY; normalize
