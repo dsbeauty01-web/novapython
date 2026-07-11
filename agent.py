@@ -1612,6 +1612,17 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         asyncio.create_task(send({"kind": "stage-diag", "decision": decision,
                                   "reason": reason[:140]}))
 
+    def gesture(name: str):
+        # FULL-BODY NOVA (2026-07-11): fire a real body move on the floor widget
+        # (browser forwards {"gesture":name} to the self-hosted engine — moves:
+        # right_hand_up · left_hand_up · both_hands_up · clap_clap · freeze ·
+        # thank_you). Widget absent / pod down → the packet is simply ignored.
+        # NOVA_GESTURES=0 kills.
+        if os.getenv("NOVA_GESTURES", "1") != "1":
+            return
+        stage("gesture", name)
+        asyncio.create_task(send({"kind": "gesture", "name": name}))
+
     def nudge(text: str, force: bool = False):
         if model is None or not hasattr(model, "send_user_text"):
             return
@@ -1626,6 +1637,7 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         stage("nudge", text)
 
     logger.info("[FRIEND] producer backstage — conversation is HERS")
+    gesture("both_hands_up")   # her body says TA-DA as the greet lands
 
     # ── SMART-INTRO PRIME LAW (2026-07-10 fix list, approved): her next line
     # comes from the kid's LAST line — never from a schedule. The producer acts
@@ -1676,6 +1688,7 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
     async def open_picker(reason: str, fast: bool = False):
         state._dance_invited = True
         stage("picker", reason)
+        gesture("right_hand_up")   # her body points the way to the games
         if fast:
             # FAST-PATH (fix 2): the kid ASKED — picker opens NOW (≤5s law),
             # her hype line rides on top while it appears.
@@ -1779,6 +1792,7 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         if hit:
             if model is not None and hasattr(model, "clear_pending_stage"):
                 model.clear_pending_stage()   # fix 5: the celebration wins the race
+            gesture("clap_clap")   # her body claps for the catch
             _move = "that's an ISOLATION" if mv["action"] == "shoulder" else "what a REACH"
             nudge(f"stage: they DID the move — cheer in ONE short burst, tell them {_move}!"
                   + (f" say their name {state.ctx.name}!" if state.ctx.name else ""), force=True)
