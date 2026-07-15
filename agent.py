@@ -3811,11 +3811,17 @@ async def entrypoint(ctx: JobContext):
     # continues as voice-only. Her audio publishes directly via RoomIO. The browser
     # reveals with a static face when only audio arrives. She must never fully die
     # because the face vendor is down.
-    _avatar_pick = os.getenv("NOVA_AVATAR", "pod").lower()
+    # DIRECT VOICE DEFAULT (2026-07-15, builder's order: "Render is the worker —
+    # RunPod out of the picture for now"). The pod default routed her voice to a
+    # dead pod = total silence on the default page. NOVA_AVATAR=pod|lemonslice|runway
+    # re-enables an avatar vendor explicitly; default publishes audio straight to the room.
+    _avatar_pick = os.getenv("NOVA_AVATAR", "voice").lower()
     if voice_only:
         # ?voiceonly session (room metadata): Nova is VOICE-ONLY by request — no
         # avatar, no credits burned. Audio publishes via RoomIO; browser shows static face.
         logger.info("[nova-v207] step 2: VOICE-ONLY session (requested) → avatar skipped")
+    elif _avatar_pick in ("voice", "none", "off", "direct"):
+        logger.info(f"[nova-v207] step 2: DIRECT VOICE (NOVA_AVATAR={_avatar_pick}) — no avatar vendor, RoomIO publishes her audio")
     elif _avatar_pick == "pod":
         # POD AVATAR — ORDER-LIPSYNC-TOPQUALITY (2026-07-11, builder's decision:
         # perfect lips > instant voice). Her voice streams to the self-hosted
