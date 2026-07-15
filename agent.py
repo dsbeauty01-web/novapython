@@ -1826,7 +1826,11 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         await _wait_playback_start(state, 12.0)
         await _wait_playback_end(state, grace=0.4)
 
-    for mv in INTRO_CHALLENGE:
+    # ONE CHALLENGE ONLY (2026-07-15, builder's call after the voiceonly test:
+    # "second challenge not good — just do one for now"): shoulder/isolation is
+    # the whole magic beat; NOVA_INTRO_CHALLENGES=2 restores the left-hand one.
+    _n_ch = max(1, int(os.getenv("NOVA_INTRO_CHALLENGES", "1")))
+    for mv in INTRO_CHALLENGE[:_n_ch]:
         if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
             state._challenge_active = None
             return
