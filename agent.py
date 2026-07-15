@@ -1769,10 +1769,38 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
     if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
         return
 
-    # 2. THE LIGHT CHALLENGE — lights + SFX are ours, the words are hers.
-    # Every producer entry passes wait_lull (fix 1). Light ON first, RE-PULSE
-    # the moment her line starts playing. Celebration PREEMPTS any queued
-    # staged line (fix 5). Dance-ask escapes the chain any time (fix 2).
+    # 2. THE MAGIC DIALOGUE (2026-07-15, builder's spec: "a dialogue, not a
+    # monologue"). Each challenge is THREE turn-taking beats — she asks, the
+    # KID responds (words or move), only then the next beat. The producer
+    # whispers one beat at a time and every action lands in silence
+    # (end-dialogue-before-actions law). Dance-ask escapes any time (fix 2).
+    async def wait_kid_turn(timeout: float):
+        """The kid's turn after one of her questions: their WORDS ('said'),
+        an early MOVE ('__hit__'), a dance ask ('__dance__'), or None (quiet)."""
+        t_ask = time.time()
+        while time.time() - t_ask < timeout and state.active and not state.game_done.is_set():
+            if _wants_dance_now():
+                return "__dance__"
+            if getattr(state, "_friend_hit", None):
+                state._friend_hit = None
+                return "__hit__"
+            if _kid_last() > t_ask:
+                return "said"
+            await asyncio.sleep(0.15)
+        return None
+
+    async def celebrate(mv):
+        """BEAT C payoff — fires ONLY on a verified hit. Never without one."""
+        if model is not None and hasattr(model, "clear_pending_stage"):
+            model.clear_pending_stage()   # fix 5: the celebration wins the race
+        gesture("clap_clap")   # her body claps for the catch
+        _move = "an ISOLATION" if mv["action"] == "shoulder" else "a REACH"
+        nudge("stage: they REALLY did the move — cheer in ONE short burst and tell them "
+              f"that cool move is called {_move}!"
+              + (f" say their name {state.ctx.name}!" if state.ctx.name else ""), force=True)
+        await _wait_playback_start(state, 12.0)
+        await _wait_playback_end(state, grace=0.4)
+
     for mv in INTRO_CHALLENGE:
         if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
             return
@@ -1781,44 +1809,74 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             return
         await wait_lull()
         state._friend_hit = None
+        part_word = {"shoulder": "shoulder", "left": "left hand"}.get(mv["action"], mv["action"])
+
+        # ── BEAT A · SEE IT — light ON first, then ONE question, then THEIR turn ──
         await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
-        # ISOLATION TEACHING (2026-07-11, builder's spec): the light is a dance
-        # LESSON, not a touch-target — teach the move by name, cheer, MOVE ON.
-        _teach = {
-            "shoulder": ("the magic light landed on their shoulder — teach them: SHRUG that "
-                         "shoulder up to the light! and tell them this cool move is called an "
-                         "ISOLATION — one short playful line"),
-            "left": ("the light JUMPED to their left hand — teach them: REACH that hand up "
-                     "into the light! one short excited line"),
-        }.get(mv["action"], f"a magic light appeared on their {mv['action']} — one short line inviting one try")
-        nudge(f"stage: {_teach}")
+        nudge(f"stage: a magic light just appeared on their {part_word} — tell them you have "
+              f"something MAGIC to show them and ASK if they can SEE the light on their "
+              f"{part_word}. ONE short question, then WAIT for their answer — do NOT explain "
+              "the move or name it yet")
         if await _wait_playback_start(state, 12.0):
             await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
+        await _wait_playback_end(state, grace=0.3)
+        turn = await wait_kid_turn(8.0)
+        if turn == "__dance__":
+            await open_picker("kid asked to dance during the light — fast-path", fast=True)
+            return
+        if turn == "__hit__":            # they nudged before being asked — magic already worked
+            stage("beat-skip", "kid did the move during SEE-it — straight to the payoff")
+            await celebrate(mv)
+            continue
+        if turn is None:                 # quiet kid: ONE soft re-point, then continue gently
+            await wait_lull(calm=1.0, cap=8.0)
+            nudge(f"stage: they didn't answer — softly point at the light once more and re-ask "
+                  f"if they SEE it on their {part_word}, tiny warm line, zero pressure")
+            if await _wait_playback_start(state, 12.0):
+                await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
+            await _wait_playback_end(state, grace=0.3)
+            turn = await wait_kid_turn(6.0)
+            if turn == "__dance__":
+                await open_picker("kid asked to dance during the light — fast-path", fast=True)
+                return
+            if turn == "__hit__":
+                await celebrate(mv)
+                continue
+
+        # ── BEAT B · TOUCH IT — the move ask (her line ends BEFORE the wait) ──
+        await wait_lull(calm=1.0, cap=10.0)
+        _ask = {
+            "shoulder": "ask them to give that shoulder a little NUDGE up into the light",
+            "left":     "ask them to REACH that left hand up into the light",
+        }.get(mv["action"], f"ask them to move their {part_word} into the light")
+        nudge(f"stage: now {_ask} — ONE short playful ask. Do NOT name the move yet, "
+              "do NOT say they did it — wait and watch")
+        if await _wait_playback_start(state, 12.0):
+            await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
+        await _wait_playback_end(state, grace=0.3)
         hit = await _friend_wait_hit(state, 10.0, escape=_wants_dance_now)
         if hit == "__dance__":
             await open_picker("kid asked to dance during the light — fast-path", fast=True)
             return
-        if not hit:
+        if not hit:                      # one warm retry, still watching for the real move
             await wait_lull(calm=1.0, cap=10.0)
-            nudge("stage: one tiny encouragement showing the move again (shrug it up! / reach up!), zero pressure")
+            nudge("stage: one tiny encouragement showing the move again (shrug it up! / reach up!), "
+                  "zero pressure — still do NOT say they did it")
             if await _wait_playback_start(state, 12.0):
                 await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
+            await _wait_playback_end(state, grace=0.3)
             hit = await _friend_wait_hit(state, 7.0, escape=_wants_dance_now)
             if hit == "__dance__":
                 await open_picker("kid asked to dance during the retry — fast-path", fast=True)
                 return
+
+        # ── BEAT C · PAYOFF — truth only ──
         if hit:
-            if model is not None and hasattr(model, "clear_pending_stage"):
-                model.clear_pending_stage()   # fix 5: the celebration wins the race
-            gesture("clap_clap")   # her body claps for the catch
-            _move = "that's an ISOLATION" if mv["action"] == "shoulder" else "what a REACH"
-            nudge(f"stage: they DID the move — cheer in ONE short burst, tell them {_move}!"
-                  + (f" say their name {state.ctx.name}!" if state.ctx.name else ""), force=True)
-            await _wait_playback_start(state, 12.0)
-            await _wait_playback_end(state, grace=0.4)
+            await celebrate(mv)
         else:
             await wait_lull(calm=1.0, cap=10.0)
-            nudge("stage: no catch — ONE warm line moving on, zero fail-feeling")
+            nudge("stage: no catch — ONE warm line moving on, zero fail-feeling. "
+                  "NEVER say they did it or name the move")
             await _wait_playback_start(state, 12.0)
             await _wait_playback_end(state, grace=0.4)
 
