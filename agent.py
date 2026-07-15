@@ -674,7 +674,7 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 "google_key_fp": _fp(os.getenv("GOOGLE_API_KEY")),
                 "hume_key_set": bool(os.getenv("HUME_API_KEY")),
                 "lemon_key_set": bool(_lemon_key()),
-                "avatar_pick": os.getenv("NOVA_AVATAR", "voice"),  # keep default in sync with the real pick (line ~3818)
+                "avatar_pick": os.getenv("NOVA_AVATAR", "pod"),  # keep default in sync with the real pick (line ~3818)
                 # TRACE-GAP FIX (2026-07-10): these were unprintable from outside
                 "USE_OPENAI": "1" if _openai_on() else os.getenv("USE_OPENAI", "(default)"),
                 "openai_key_fp": _fp(_openai_key()),
@@ -3902,11 +3902,29 @@ async def entrypoint(ctx: JobContext):
     # continues as voice-only. Her audio publishes directly via RoomIO. The browser
     # reveals with a static face when only audio arrives. She must never fully die
     # because the face vendor is down.
-    # DIRECT VOICE DEFAULT (2026-07-15, builder's order: "Render is the worker —
-    # RunPod out of the picture for now"). The pod default routed her voice to a
-    # dead pod = total silence on the default page. NOVA_AVATAR=pod|lemonslice|runway
-    # re-enables an avatar vendor explicitly; default publishes audio straight to the room.
-    _avatar_pick = os.getenv("NOVA_AVATAR", "voice").lower()
+    # POD DEFAULT RESTORED (2026-07-15 evening, builder: "bring back nova with the
+    # avatar live on runpod") — WITH the safety that was missing: the pod is PROBED
+    # first (GET /voice_state, 200 = live bridge; the runpod proxy 404s when the pod
+    # is dead). Unreachable pod → DIRECT VOICE fallback. She must never die silent
+    # because a pod died (that was today's laptop-silence root cause).
+    _avatar_pick = os.getenv("NOVA_AVATAR", "pod").lower()
+    if _avatar_pick == "pod":
+        _pod_base = os.getenv("NOVA_POD_VOICE_URL",
+                              "https://2yjr769ejqp17v-8765.proxy.runpod.net").rstrip("/")
+        _pod_ok = False
+        try:
+            import aiohttp as _ah
+            async with _ah.ClientSession() as _ps:
+                async with _ps.get(_pod_base + "/voice_state",
+                                   timeout=_ah.ClientTimeout(total=2.5)) as _pr:
+                    _pod_ok = (_pr.status == 200)
+        except Exception as _pe:
+            logger.warning(f"[nova-v207] pod probe error: {_pe}")
+        if not _pod_ok:
+            logger.error(f"[nova-v207] POD UNREACHABLE ({_pod_base}) → DIRECT VOICE fallback")
+            _avatar_pick = "voice"
+        else:
+            logger.info(f"[nova-v207] pod probe OK ({_pod_base}/voice_state 200) — binding pod voice")
     if voice_only:
         # ?voiceonly session (room metadata): Nova is VOICE-ONLY by request — no
         # avatar, no credits burned. Audio publishes via RoomIO; browser shows static face.

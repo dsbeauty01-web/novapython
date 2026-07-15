@@ -31,7 +31,7 @@ from livekit.agents.voice import io as voice_io
 logger = logging.getLogger("nova-pod-voice")
 
 PUSH_URL = os.getenv("NOVA_POD_VOICE_URL",
-                     "https://u6m9xwo9s3l2iz-8765.proxy.runpod.net")
+                     "https://2yjr769ejqp17v-8765.proxy.runpod.net")   # nova-v9 (2026-07-15)
 POD_SID = os.getenv("NOVA_POD_SID", "0")
 CHUNK_S = float(os.getenv("NOVA_POD_CHUNK_S", "0.5"))
 # FLV path delay: engine render + SRS + transcode + browser buffer (~0.9s)
