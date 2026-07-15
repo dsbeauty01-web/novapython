@@ -1577,15 +1577,38 @@ def _turn_wants_start(t):
     return _wants_to_start(str(t))
 
 
-async def _friend_wait_hit(state, timeout: float, escape=None):
+import re as _re_done_mod
+_KID_DONE_RE = _re_done_mod.compile(
+    r"\b(i (just )?did( it| that)?|did it|i'?ve done|done it|i'?m doing( it)?|like this|i did)\b",
+    _re_done_mod.I)
+
+
+def _kid_claims_done(state, since: float) -> bool:
+    """VOICE FIRST (2026-07-15, builder's law): if the kid SAYS they did it,
+    BELIEVE them — their words beat the camera detector, always."""
+    try:
+        at = max(getattr(state, "_last_kid_at", 0) or 0,
+                 getattr(state, "last_kid_speech_at", 0) or 0)
+        if at <= since:
+            return False
+        return bool(_KID_DONE_RE.search(str(getattr(state, "last_kid_text", "") or "")))
+    except Exception:
+        return False
+
+
+async def _friend_wait_hit(state, timeout: float, escape=None, claim_since=None):
     """FRIEND MODE: wait for the browser's try_move hit (set by the data handler).
     LEAD-FIX 5 (2026-07-11): `escape` (dance-intent check) is polled INSIDE the
     wait — a kid's "I want to dance" escapes in ≤0.15s, not at the next
-    checkpoint (it used to wait out the whole hit window)."""
+    checkpoint (it used to wait out the whole hit window).
+    VOICE FIRST (2026-07-15): `claim_since` — the kid SAYING "I did it" after
+    that moment counts as a hit; his words outrank the detector."""
     t0 = time.time()
     while time.time() - t0 < timeout and state.active and not state.game_done.is_set():
         if escape is not None and escape():
             return "__dance__"
+        if claim_since is not None and _kid_claims_done(state, claim_since):
+            return "__claimed__"
         hit = getattr(state, "_friend_hit", None)
         if hit:
             state._friend_hit = None
@@ -1705,6 +1728,7 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
 
     async def open_picker(reason: str, fast: bool = False):
         state._dance_invited = True
+        state._challenge_active = None   # challenge over — release the cue lock
         stage("picker", reason)
         gesture("right_hand_up")   # her body points the way to the games
         if fast:
@@ -1776,12 +1800,13 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
     # (end-dialogue-before-actions law). Dance-ask escapes any time (fix 2).
     async def wait_kid_turn(timeout: float):
         """The kid's turn after one of her questions: their WORDS ('said'),
-        an early MOVE ('__hit__'), a dance ask ('__dance__'), or None (quiet)."""
+        an early MOVE or a spoken "I did it" ('__hit__' — voice first, believe
+        him), a dance ask ('__dance__'), or None (quiet)."""
         t_ask = time.time()
         while time.time() - t_ask < timeout and state.active and not state.game_done.is_set():
             if _wants_dance_now():
                 return "__dance__"
-            if getattr(state, "_friend_hit", None):
+            if getattr(state, "_friend_hit", None) or _kid_claims_done(state, t_ask):
                 state._friend_hit = None
                 return "__hit__"
             if _kid_last() > t_ask:
@@ -1803,12 +1828,18 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
 
     for mv in INTRO_CHALLENGE:
         if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
+            state._challenge_active = None
             return
         if _wants_dance_now():
             await open_picker("kid asked to dance mid-challenge — fast-path", fast=True)
             return
         await wait_lull()
         state._friend_hit = None
+        # CUE LOCK (2026-07-15, Shuki log): her own lines ("lift that left HAND up")
+        # were re-cueing the browser to 'hands' mid-challenge → the kid's real
+        # left-raise no longer matched → false miss → she kept pushing. The
+        # speech-parser honors _challenge_active; the friend producer must set it.
+        state._challenge_active = mv["action"]
         part_word = {"shoulder": "shoulder", "left": "left hand"}.get(mv["action"], mv["action"])
 
         # ── BEAT A · SEE IT — light ON first, then ONE question, then THEIR turn ──
@@ -1849,12 +1880,13 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             "shoulder": "ask them to give that shoulder a little NUDGE up into the light",
             "left":     "ask them to REACH that left hand up into the light",
         }.get(mv["action"], f"ask them to move their {part_word} into the light")
+        ask_at = time.time()   # VOICE FIRST: "I did it" spoken after this = a hit
         nudge(f"stage: now {_ask} — ONE short playful ask. Do NOT name the move yet, "
               "do NOT say they did it — wait and watch")
         if await _wait_playback_start(state, 12.0):
             await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
         await _wait_playback_end(state, grace=0.3)
-        hit = await _friend_wait_hit(state, 10.0, escape=_wants_dance_now)
+        hit = await _friend_wait_hit(state, 10.0, escape=_wants_dance_now, claim_since=ask_at)
         if hit == "__dance__":
             await open_picker("kid asked to dance during the light — fast-path", fast=True)
             return
@@ -1865,7 +1897,7 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             if await _wait_playback_start(state, 12.0):
                 await send({"kind": "cue-part", "part": mv["action"], "joint": mv["joint"]})
             await _wait_playback_end(state, grace=0.3)
-            hit = await _friend_wait_hit(state, 7.0, escape=_wants_dance_now)
+            hit = await _friend_wait_hit(state, 7.0, escape=_wants_dance_now, claim_since=ask_at)
             if hit == "__dance__":
                 await open_picker("kid asked to dance during the retry — fast-path", fast=True)
                 return
@@ -1881,6 +1913,7 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             await _wait_playback_end(state, grace=0.4)
 
     # 3. PICKER — she invites at a lull, we open it as her line lands
+    state._challenge_active = None   # challenge chain done — release the cue lock
     if state.ctx.phase in ("intro", "recognition") and not state.game_done.is_set():
         await wait_lull(calm=1.0, cap=15.0)
         await open_picker("challenge done — inviting to dance")
