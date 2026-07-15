@@ -1227,10 +1227,13 @@ async def _nova_say(session: AgentSession, line: str):
         if _gemini_on():
             if _he:
                 # HEBREW render rule: scripted lines live in English — she speaks
-                # them in natural Israeli Hebrew, same meaning and energy.
+                # them in natural Israeli Hebrew, same meaning and energy. The
+                # 2026-07-15 probe showed she can echo the quoted English if the
+                # order is soft — so the order forbids English outright.
                 await session.generate_reply(
-                    instructions=('Say this in natural, warm Israeli Hebrew (kid register, '
-                                  f'same meaning and energy), nothing more: "{line}"'))
+                    instructions=('דברי עברית בלבד. אמרי את המשפט הבא בעברית טבעית וחמה '
+                                  '(אותה משמעות, אותה אנרגיה) — אסור להגיד אותו באנגלית: '
+                                  f'"{line}"'))
             else:
                 # Gemini treats instructions as guidance, not a script — pin it verbatim
                 await session.generate_reply(
@@ -3206,6 +3209,30 @@ _NOT_A_NAME = {
     "also", "so", "very", "excited", "bored", "sad", "glad",
 }
 
+_NOT_A_NAME_HE = {
+    "כן", "לא", "מה", "למה", "איפה", "רגע", "בסדר", "יאללה", "מוכן", "מוכנה",
+    "מוכנים", "רוצה", "אני", "אתה", "את", "פה", "כאן", "עוד", "שוב", "מתחילים",
+    "להתחיל", "נתחיל", "אמא", "אבא", "היי", "שלום", "טוב", "אוקיי", "אוקי",
+    "די", "זהו", "ביי", "נובה", "לרקוד", "ריקוד", "משחק", "בוא", "בואי",
+}
+
+
+def _extract_name_he(t: str):
+    """HEBREW name pull (?lang=he): 'קוראים לי שוקי' / 'אני שוקי' / bare 'שוקי'.
+    No capitals in Hebrew — a stoplist does the not-a-name work instead."""
+    import re
+    m = re.search(r"(?:קוראים לי|השם שלי|שמי|אני)\s+([֐-׿][֐-׿'\-]{1,20})", t)
+    if m and m.group(1) not in _NOT_A_NAME_HE:
+        return m.group(1)
+    if "?" in t:
+        return None
+    words = re.findall(r"[֐-׿][֐-׿'\-]*", t)
+    if not words or len(words) > 2:
+        return None
+    words = [w for w in words if len(w) > 1 and w not in _NOT_A_NAME_HE]
+    return words[0] if words else None
+
+
 def _extract_name(text: Optional[str]) -> Optional[str]:
     """Best-effort name pull. STRONG patterns ('my name is X') win even inside a
     question; otherwise only a clean short statement (not a question) counts."""
@@ -3213,6 +3240,10 @@ def _extract_name(text: Optional[str]) -> Optional[str]:
         return None
     import re
     t = text.strip()
+    # HEBREW: any Hebrew letters → the Hebrew extractor owns it (Latin rules below
+    # can never match Hebrew — this is why the gender chip never fired for 'שוקי').
+    if re.search(r"[֐-׿]", t):
+        return _extract_name_he(t)
     # Strong explicit pattern — trust it even if the sentence has a '?'
     m = re.search(r"(?:my name is|i'?m|i am|im|call me|name's|they call me)\s+([A-Za-z][A-Za-z\-']{1,20})", t, re.I)
     if m:
@@ -3638,6 +3669,16 @@ async def entrypoint(ctx: JobContext):
                 _gemini_adapter._greet_text_override = (
                     "(the dancer just arrived and the dance game is starting "
                     "right now — greet them with ONE short excited line, no questions)")
+                if state.ctx.lang == "he":
+                    _gemini_adapter._greet_text_override = (
+                        "(הרקדן בדיוק הגיע ומשחק הריקוד מתחיל ממש עכשיו — "
+                        "ברכי אותו בשורה קצרה ונרגשת אחת בעברית, בלי שאלות)")
+            elif state.ctx.lang == "he":
+                # HEBREW greet (spec exact line): the generic '(greet them now)' let
+                # the model imitate the flow's English example — pin the Hebrew hello.
+                _gemini_adapter._greet_text_override = (
+                    '(הרקדן בדיוק הופיע על המסך — ברכי אותו עכשיו, בדיוק ברוח הזאת: '
+                    '"היי היי! אני נובה — החברה הקסומה שלך! איך קוראים לך?")')
             state._evi_model = _gemini_adapter
             _gemini_adapter._state = state   # STAGE 1: mouth-gate reads the playback clock
             # ROOT CAUSE FIX (2026-07-09, "she doesn't reply to text"): the plugin

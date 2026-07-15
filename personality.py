@@ -1222,6 +1222,11 @@ HARD SAFETY (commercial, non-negotiable):
     # The persona block is the spec's exact Part 3 text; the gender rule is the
     # Hebrew-only must (unknown → neutral plural, natural in Israeli kid-speech).
     if getattr(ctx, "lang", "en") == "he":
+        # Prompt-position matters: the live probe (2026-07-15) leaked the first 3
+        # lines in English because the flow's English examples sit ABOVE the block —
+        # the law must ALSO be the very first thing she reads.
+        out = ("חוק עליון: את מדברת אך ורק עברית. כל הדוגמאות והשורות באנגלית במסמך הזה "
+               "נאמרות בעברית טבעית וחמה — לעולם, לעולם לא באנגלית.\n\n") + out
         gender = (ctx.shared_facts or {}).get("gender", "unknown")
         gender_he = {"boy": "בן (ילד) — פנייה בלשון זכר: מוכן, תרקוד, אתה",
                      "girl": "בת (ילדה) — פנייה בלשון נקבה: מוכנה, תרקדי, את"}.get(

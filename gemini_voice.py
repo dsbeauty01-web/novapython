@@ -138,6 +138,12 @@ class GeminiVoiceAdapter:
         kwargs = {"user_input": user_input}
         if notes:
             kwargs["instructions"] = f"(your own awareness right now, never read aloud: {notes})"
+        # HEBREW MODE (2026-07-15 probe: first 3 lines leaked English): EVERY turn
+        # carries the language law — greet, briefs, silence nudges, all paths.
+        _st_lang = getattr(getattr(getattr(self, "_state", None), "ctx", None), "lang", "en")
+        if _st_lang == "he":
+            _he_law = "(דברי עברית בלבד — אף מילה באנגלית, גם אם ההנחיה כתובה באנגלית)"
+            kwargs["instructions"] = (kwargs.get("instructions", "") + " " + _he_law).strip()
 
         async def _go():
             import time as _t
