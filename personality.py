@@ -474,6 +474,9 @@ class NovaContext:
     # PHASE 3 — in-game live presence
     kid_read: str = "neutral"           # hesitant | neutral | confident (from GameVoiceGate)
     deferred_topic: Optional[str] = None  # kid's mid-song story → resurfaced in the ending
+    # HEBREW VERSION (?lang=he): "he" appends the Hebrew persona block to her session
+    # prompt and turns clips off (her live voice carries Hebrew). "en" = unchanged.
+    lang: str = "en"
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1214,6 +1217,23 @@ HARD SAFETY (commercial, non-negotiable):
         out = out.replace(
             '- You ask ONLY their first name. NEVER ask for: age,',
             '- You NEVER ask for: their name, age,')
+
+    # ── HEBREW VERSION (?lang=he) — appended, never replacing the locked prompt.
+    # The persona block is the spec's exact Part 3 text; the gender rule is the
+    # Hebrew-only must (unknown → neutral plural, natural in Israeli kid-speech).
+    if getattr(ctx, "lang", "en") == "he":
+        gender = (ctx.shared_facts or {}).get("gender", "unknown")
+        gender_he = {"boy": "בן (ילד) — פנייה בלשון זכר: מוכן, תרקוד, אתה",
+                     "girl": "בת (ילדה) — פנייה בלשון נקבה: מוכנה, תרקדי, את"}.get(
+                        gender, "לא ידוע — פנייה בלשון רבים ניטרלית בלבד (תרקדו, מוכנים, בואו) — טבעי בעברית של ילדים")
+        out += f"""
+
+═══ עברית (HEBREW MODE — overrides any language implied above) ═══
+דברי עברית בלבד, טבעית וחמה. את נובה — מורה קסומה לריקוד, אחות גדולה מגניבה בת 11-12. אנרגיה 110% יותר מהילד. שבחים תמיד ספציפיים (איזה חלק גוף, מה בדיוק היה טוב) — אסור 'כל הכבוד' סתמי. אסור: לעג, תחרות, קול תינוקי, המילים 'טעות/לא נכון/נכשלת'. משפט אחד-שניים ואז עוצרים ומקשיבים. אם הילד שקט — ניסיון עדין אחד, עוד אחד רך, ואז ממשיכים בלי לחץ. תמיד מובילה בחזרה לריקוד.
+
+GENDER (עברית מחייבת מין דקדוקי): {gender_he}
+
+SYSTEM LINES IN ENGLISH (hard rule): the game system sends you lines and cues written in English. NEVER say them in English — always render them in natural, warm Israeli Hebrew with the same meaning and energy. Body-part names in Hebrew: יד, כתף, ראש, צלעות, ירכיים, ברכיים. The child hears ONLY Hebrew from you, ever."""
     return out
 
 

@@ -874,6 +874,25 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     logger.info(f"[chat] user-said: '{text[:80]}'")
                     asyncio.create_task(_user_said(session, state, agent, text))
 
+            elif kind == "gender":
+                # HEBREW GENDER CHIP answer: boy | girl | skip. Stored with the name
+                # (shared_facts, survives sessions) + whispered so her very next line
+                # uses the right Hebrew register. skip → stays neutral-plural.
+                val = (msg.get("value") or "").strip().lower()
+                if val in ("boy", "girl"):
+                    state.ctx.shared_facts["gender"] = val
+                    try:
+                        memory.store.add_shared_fact(state.kid_id, "gender", val)
+                    except Exception:
+                        pass
+                    reg = ("בן — דברי אליו בלשון זכר מעכשיו (מוכן, תרקוד, אתה)" if val == "boy"
+                           else "בת — דברי אליה בלשון נקבה מעכשיו (מוכנה, תרקדי, את)")
+                    _whisper(state, "MEMORY", f"gender answered: {reg}. Acknowledge in ONE tiny warm Hebrew word and move on — never ask again.")
+                    logger.info(f"[nova-he] gender = {val} (stored + whispered)")
+                else:
+                    _whisper(state, "MEMORY", "they skipped the boy/girl question — stay in neutral plural Hebrew (מוכנים, תרקדו) and NEVER ask again")
+                    logger.info("[nova-he] gender skipped → neutral plural stays")
+
             elif kind == "clip-ack":
                 _ev = msg.get("ev")
                 if _ev == "duet-pause":
@@ -970,6 +989,14 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                         # non-EVI path: speak the deterministic opener
                         line = getattr(state, "_first_line", None) or "hey there… I'm Nova. …I can see you, you know."
                         await _nova_say(session, line)
+                    # HEBREW GENDER: a returning kid never re-lands a name — if we know
+                    # them but not boy/girl, ask once after the comeback greet settles.
+                    if (getattr(state.ctx, "lang", "en") == "he" and state.ctx.name
+                            and not (state.ctx.shared_facts or {}).get("gender")):
+                        async def _late_chip():
+                            await asyncio.sleep(7.0)
+                            _arm_gender_chip(state)
+                        asyncio.create_task(_late_chip())
                     if not _friend_on():   # FRIEND MODE: the model + producer own silences
                         asyncio.create_task(_silence_driver(state, session))   # FIX 4: she LEADS on silence
                 asyncio.create_task(_reveal_greet())
@@ -1136,6 +1163,12 @@ async def _nova_say(session: AgentSession, line: str):
                         and os.getenv("NOVA_AVATAR_LIVE_LINES", "1") == "1"
                         and getattr(st.ctx, "phase", "intro") != "dance")
     hit = _CLIP_INDEX.get(line.strip()) if os.getenv("NOVA_CLIPS", "1") == "1" else None
+    # HEBREW MODE (spec Part 5): the 93 clips are English — CLIPS OFF, her live
+    # voice carries every line in Hebrew (the render rule below).
+    _he = bool(st is not None and getattr(getattr(st, "ctx", None), "lang", "en") == "he")
+    if _he and hit:
+        logger.info(f"[nova-he] clip '{hit[0]}' suppressed (he-mode all-live)")
+        hit = None
     if _avatar_live and hit:
         logger.info(f"[LIPS] clip '{hit[0]}' → LIVE line (avatar-first)")
         hit = None
@@ -1192,9 +1225,16 @@ async def _nova_say(session: AgentSession, line: str):
         if st is not None:
             await _wait_playback_end(st, grace=0.0, cap=10.0)
         if _gemini_on():
-            # Gemini treats instructions as guidance, not a script — pin it verbatim
-            await session.generate_reply(
-                instructions=f'Say exactly this, word for word, nothing more: "{line}"')
+            if _he:
+                # HEBREW render rule: scripted lines live in English — she speaks
+                # them in natural Israeli Hebrew, same meaning and energy.
+                await session.generate_reply(
+                    instructions=('Say this in natural, warm Israeli Hebrew (kid register, '
+                                  f'same meaning and energy), nothing more: "{line}"'))
+            else:
+                # Gemini treats instructions as guidance, not a script — pin it verbatim
+                await session.generate_reply(
+                    instructions=f'Say exactly this, word for word, nothing more: "{line}"')
         elif _evi_on():
             await session.generate_reply(instructions=line)
         else:
@@ -1369,6 +1409,37 @@ def _whisper(state, channel: str, text: str) -> bool:
         return False
 
 
+def _arm_gender_chip(state):
+    """HEBREW GENDER (spec Part 4, he-only): after the name lands, ONE cute chip
+    question in HER voice + two big chips in the browser. Until answered the
+    prompt keeps her in neutral-plural. Fires once per session, never in-game."""
+    if getattr(state.ctx, "lang", "en") != "he":
+        return
+    if (state.ctx.shared_facts or {}).get("gender"):
+        return
+    if getattr(state, "_gender_chip_armed", False):
+        return
+    state._gender_chip_armed = True
+
+    async def _ask():
+        await asyncio.sleep(1.0)   # let her name-reply land first (mouth queue serializes)
+        if not getattr(state, "active", True) or state.ctx.phase == "dance":
+            return
+        try:
+            room = getattr(state, "room", None)
+            if room is not None:
+                await room.local_participant.publish_data(
+                    json.dumps({"kind": "gender-chip"}).encode("utf-8"), reliable=True)
+        except Exception as e:
+            logger.warning(f"[nova-he] gender-chip packet failed: {e}")
+        sess = getattr(state, "session", None)
+        if sess is not None:
+            await _nova_say(sess, "רגע — ילד או ילדה? שאדע איך לדבר אלייך 😄")
+        logger.info("[nova-he] gender chip asked (voice + chips)")
+
+    asyncio.create_task(_ask())
+
+
 async def _dead_air_watch(state):
     """COMMERCIAL-INTRO Part A.5/E: any conversational gap >4s where the ball is
     in NOVA's court = ERROR with cause. The kid thinking inside a listen window
@@ -1525,6 +1596,7 @@ class TurnEngine:
                     except Exception:
                         pass
                     logger.info(f"[TURN] side-captured name '{_nm}' (beat '{self.beat_name}' continues)")
+                    _arm_gender_chip(self.state)
             logger.info(f"[TURN] input '{kind}':'{str(val)[:30]}' does not resolve beat '{self.beat_name}'")
             return False
         self._result = (kind, r)
@@ -1977,6 +2049,7 @@ async def run_intro_turns(session: AgentSession, state: NovaSessionState,
             logger.info(f"[TURN] name captured: {name}")
             # A.4: producer LISTENS and silently arms the next stage — never intercepts
             _whisper(state, "MEMORY", f"their name is {name} — got it, the name talk is done forever")
+            _arm_gender_chip(state)
         else:
             _whisper(state, "MEMORY", "no name given — call them 'friend', warm as ever, and NEVER re-ask")
     else:
@@ -2773,6 +2846,7 @@ async def _user_said(session: AgentSession, state: NovaSessionState, agent: "Nov
                     pass
                 _whisper(state, "MEMORY", f"their name is {_nm} — got it, never re-ask")
                 logger.info(f"[FRIEND] name captured: {_nm}")
+                _arm_gender_chip(state)
         try:
             memory.store.add_message(state.kid_id, "user", text)
         except Exception:
@@ -3343,6 +3417,7 @@ async def entrypoint(ctx: JobContext):
     kid_id = None
     voice_only = False
     direct_game = None
+    lang = "en"   # HEBREW (?lang=he): from room/dispatch metadata; "en" = unchanged
     # ROOT-CAUSE FIX (2026-07-05): ctx.room.metadata is EMPTY before ctx.connect() —
     # every session ever ran as anon-* (memory never got real kid ids) and the
     # voiceOnly/directGame flags were silently lost. The JOB carries the room info
@@ -3368,12 +3443,17 @@ async def entrypoint(ctx: JobContext):
             kid_id = meta.get("kidId") or kid_id
             voice_only = voice_only or bool(meta.get("voiceOnly"))
             direct_game = direct_game or meta.get("directGame") or None
-            logger.info(f"[nova-v207] metadata via {_src}: kidId={kid_id} voiceOnly={voice_only} directGame={direct_game}")
+            lang = meta.get("lang") or lang
+            logger.info(f"[nova-v207] metadata via {_src}: kidId={kid_id} voiceOnly={voice_only} directGame={direct_game} lang={lang}")
             break
         except Exception:
             continue
 
     state = NovaSessionState(kid_id=kid_id)
+    state.ctx.lang = "he" if lang == "he" else "en"
+    if state.ctx.lang == "he":
+        logger.info("[nova-he] HEBREW session — persona block ON, clips OFF, "
+                    "directed lines rendered in Hebrew")
     if direct_game:
         # DIRECT-GAME (?game= link): the browser jumps straight into the game — NO intro
         # name-talk, NO scripted challenge (it talked over the game, live 2026-07-04).
@@ -3739,6 +3819,7 @@ async def entrypoint(ctx: JobContext):
                         except Exception:
                             pass
                         logger.info(f"[nova] captured name (hook): {nm}")
+                        _arm_gender_chip(state)
                 # TURN-OWNER: voice inputs go to the engine (resolved against the
                 # current beat only). EVI replies to voice naturally either way.
                 _eng = getattr(state, "_turn_engine", None)

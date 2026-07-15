@@ -135,6 +135,9 @@ class CreateSessionReq(BaseModel):
     # (room+token only). Nova is summoned later via /v2/dispatch at the orb tap —
     # dispatching her into an empty room at page load left her tracks unpublished.
     dispatch: Optional[bool] = True
+    # HEBREW (?lang=he): carried in room+dispatch metadata → agent builds the
+    # Hebrew persona block and turns clips off. Default "en" = behavior unchanged.
+    lang: Optional[str] = None
 
 
 @app.post("/v2/create-session")
@@ -150,7 +153,8 @@ async def create_session(req: CreateSessionReq):
 
     # Embed kid_id (+ mode flags) in room metadata so the agent picks it up
     room_metadata = json.dumps({"kidId": kid_id, "voiceOnly": bool(req.voiceOnly),
-                                "directGame": req.directGame or None})
+                                "directGame": req.directGame or None,
+                                "lang": (req.lang or "en")})
 
     token = (
         api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
@@ -216,13 +220,14 @@ class DispatchReq(BaseModel):
     roomName: str
     kidId: Optional[str] = None
     agent: Optional[str] = "nova"
+    lang: Optional[str] = None   # HEBREW: tap-dispatch carries lang too (job metadata wins pre-connect)
 
 
 @app.post("/v2/dispatch")
 async def dispatch_agent(req: DispatchReq):
     if not all([LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET]):
         raise HTTPException(500, "LiveKit env not set")
-    room_metadata = json.dumps({"kidId": req.kidId or ""})
+    room_metadata = json.dumps({"kidId": req.kidId or "", "lang": (req.lang or "en")})
     try:
         livekit_api = api.LiveKitAPI(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         dispatch = await livekit_api.agent_dispatch.create_dispatch(
