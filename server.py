@@ -302,6 +302,53 @@ async def update_memory(req: MemoryUpdateReq):
 
 
 # ────────────────────────────────────────────────────────────────────────
+# /v2/tts — MOBILE REAL VOICE (2026-07-15): renders one short line as mp3 in
+# HER voice (same identity as the laptop Realtime voice). Used two ways:
+#   1. build-time: pre-render the mobile page's fixed lines → mobile-voice/*.mp3
+#   2. runtime: the ONE dynamic name line per session ("Rafi!!"), cached client-side
+# Guarded: short text only. In-memory LRU so repeat lines cost nothing.
+# ────────────────────────────────────────────────────────────────────────
+class TTSReq(BaseModel):
+    text: str
+    voice: Optional[str] = None
+
+
+_TTS_CACHE: dict = {}
+
+
+@app.post("/v2/tts")
+async def tts(req: TTSReq):
+    text = (req.text or "").strip()
+    if not text or len(text) > 90:
+        raise HTTPException(400, "text required, max 90 chars")
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        raise HTTPException(503, "OPENAI_API_KEY not set on this service")
+    voice = (req.voice or os.getenv("NOVA_TTS_VOICE", "marin")).strip()
+    ck = hashlib.sha1(f"{voice}|{text}".encode()).hexdigest()
+    if ck in _TTS_CACHE:
+        from fastapi import Response
+        return Response(content=_TTS_CACHE[ck], media_type="audio/mpeg")
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as cx:
+        r = await cx.post("https://api.openai.com/v1/audio/speech",
+                          headers={"Authorization": f"Bearer {key}"},
+                          json={"model": os.getenv("NOVA_TTS_MODEL", "gpt-4o-mini-tts"),
+                                "voice": voice, "input": text,
+                                "response_format": "mp3",
+                                "instructions": "Warm, playful big-sister energy for a young kid. Bright and alive, never flat."})
+    if r.status_code != 200:
+        logger.error(f"[tts] openai {r.status_code}: {r.text[:200]}")
+        raise HTTPException(502, f"tts failed: {r.status_code}")
+    audio = r.content
+    if len(_TTS_CACHE) > 300:
+        _TTS_CACHE.clear()
+    _TTS_CACHE[ck] = audio
+    from fastapi import Response
+    return Response(content=audio, media_type="audio/mpeg")
+
+
+# ────────────────────────────────────────────────────────────────────────
 # /v2/stats — for debugging
 # ────────────────────────────────────────────────────────────────────────
 @app.get("/v2/stats")
