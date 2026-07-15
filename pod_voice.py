@@ -20,6 +20,7 @@ Kill: NOVA_AVATAR != "pod" → this module is never bound.
 from __future__ import annotations
 
 import os
+import json
 import time
 import asyncio
 import logging
@@ -87,6 +88,19 @@ class PodVoiceOutput(voice_io.AudioOutput):
                                f"room {self._room_name} stops pushing (zombie-mix guard)")
             return
         dur = len(pcm) / 2 / SAMPLE_RATE
+        # MAGIC REVEAL SYNC (2026-07-15): tell the page her voice is REALLY flowing —
+        # the reveal fade waits for first audio, and pod audio was invisible to it
+        # (the page watched room-audio only → every pod reveal hit the 30s cap).
+        _now = time.time()
+        if _now - getattr(self, "_aud_announced", 0.0) > 1.5:
+            self._aud_announced = _now
+            _room = getattr(self._state, "room", None)
+            if _room is not None:
+                try:
+                    asyncio.create_task(_room.local_participant.publish_data(
+                        json.dumps({"kind": "pod-audible"}).encode("utf-8"), reliable=False))
+                except Exception:
+                    pass
         try:
             async with self._push_lock:   # chunks must land in order
                 async with self._session().post(

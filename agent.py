@@ -1984,6 +1984,22 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         # ── BEAT C · PAYOFF — truth only ──
         if hit:
             await celebrate(mv)
+            # MAGIC GESTURES (2026-07-15 rule 3): after the shoulder payoff she
+            # DOES 2-3 bank moves with them — copy-me micro-beat, one tiny line
+            # each, her avatar body demoing. Dance-ask escapes any time.
+            if mv["action"] == "shoulder":
+                for _g, _lbl in (("right_hand_up", "RIGHT hand UP"),
+                                 ("left_hand_up",  "now the LEFT hand"),
+                                 ("both_hands_up", "BOTH hands — ta-daa")):
+                    if _wants_dance_now() or state.game_done.is_set():
+                        break
+                    await wait_lull(calm=0.8, cap=8.0)
+                    gesture(_g)
+                    nudge(f"stage: you are DOING the move with them on screen right now — say "
+                          f"'copy me — {_lbl}!' ONE tiny playful line, nothing else")
+                    await _wait_playback_start(state, 8.0)
+                    await _wait_playback_end(state, grace=0.3)
+                    await asyncio.sleep(1.4)   # their beat to copy her
         else:
             await wait_lull(calm=1.0, cap=10.0)
             nudge("stage: no catch — ONE warm line moving on, zero fail-feeling. "
