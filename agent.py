@@ -674,7 +674,7 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 "google_key_fp": _fp(os.getenv("GOOGLE_API_KEY")),
                 "hume_key_set": bool(os.getenv("HUME_API_KEY")),
                 "lemon_key_set": bool(_lemon_key()),
-                "avatar_pick": os.getenv("NOVA_AVATAR", "pod"),
+                "avatar_pick": os.getenv("NOVA_AVATAR", "voice"),  # keep default in sync with the real pick (line ~3818)
                 # TRACE-GAP FIX (2026-07-10): these were unprintable from outside
                 "USE_OPENAI": "1" if _openai_on() else os.getenv("USE_OPENAI", "(default)"),
                 "openai_key_fp": _fp(_openai_key()),
