@@ -32,6 +32,15 @@ logger = logging.getLogger("nova-pod-voice")
 
 PUSH_URL = os.getenv("NOVA_POD_VOICE_URL",
                      "https://2yjr769ejqp17v-8765.proxy.runpod.net")   # nova-v9 (2026-07-15)
+
+# OWNER LOCK registry — one avatar mouth, one owner room (newest wins).
+POD_OWNER = {"room": None, "at": 0.0}
+
+
+def claim_pod(room_name: str) -> None:
+    POD_OWNER["room"] = room_name
+    POD_OWNER["at"] = time.time()
+    logging.getLogger("nova-pod-voice").info(f"[POD-VOICE] room '{room_name}' OWNS the avatar now")
 POD_SID = os.getenv("NOVA_POD_SID", "0")
 CHUNK_S = float(os.getenv("NOVA_POD_CHUNK_S", "0.5"))
 # FLV path delay: engine render + SRS + transcode + browser buffer (~0.9s)
@@ -55,6 +64,13 @@ class PodVoiceOutput(voice_io.AudioOutput):
         self._push_lock = asyncio.Lock()
         self._finish_task: asyncio.Task | None = None
         state._pod_audible_until = 0.0
+        # OWNER LOCK (2026-07-15, "gibberish" fix): the pod avatar is ONE shared
+        # mouth — every concurrent room used to push into the same stream and the
+        # voices MIXED. Newest room claims ownership; a session that lost it
+        # (zombie room, pre-refresh job) silently drops its audio.
+        self._room_name = getattr(getattr(state, "room", None), "name", None) or f"state-{id(state)}"
+        claim_pod(self._room_name)
+        self._lost_logged = False
 
     def _session(self) -> aiohttp.ClientSession:
         if self._http is None or self._http.closed:
@@ -63,6 +79,12 @@ class PodVoiceOutput(voice_io.AudioOutput):
 
     async def _push(self, pcm: bytes) -> None:
         if not pcm:
+            return
+        if POD_OWNER["room"] != self._room_name:
+            if not self._lost_logged:
+                self._lost_logged = True
+                logger.warning(f"[POD-VOICE] ownership lost (owner={POD_OWNER['room']}) — "
+                               f"room {self._room_name} stops pushing (zombie-mix guard)")
             return
         dur = len(pcm) / 2 / SAMPLE_RATE
         try:
@@ -86,6 +108,13 @@ class PodVoiceOutput(voice_io.AudioOutput):
 
     async def capture_frame(self, frame: rtc.AudioFrame) -> None:
         await super().capture_frame(frame)
+        # READY GATE (2026-07-15): no pod audio before the page's reveal —
+        # "she starts gibberish before the page is ready". Early frames drop.
+        try:
+            if not self._state.client_ready.is_set():
+                return
+        except Exception:
+            pass
         if not self._seg_dur:
             self._seg_started = time.time()
         self._buf.extend(bytes(frame.data))
@@ -123,6 +152,8 @@ class PodVoiceOutput(voice_io.AudioOutput):
         self.on_playback_finished(playback_position=seg_dur, interrupted=True)
 
         async def _cut() -> None:
+            if POD_OWNER["room"] != self._room_name:
+                return   # a zombie room must not cut the owner's speech
             try:
                 async with self._session().post(
                     f"{PUSH_URL}/interrupt_voice?sid={POD_SID}&persona=dance",
