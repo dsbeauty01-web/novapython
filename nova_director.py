@@ -173,23 +173,9 @@ class MagicLight:
                           "to inviting them to dance. do NOT invent more moves or mini-games",
                           urgent=True)
 
-        async def _push_to_dance():
-            try:
-                await asyncio.sleep(7.0)   # her celebration's air time
-                # NO TAKEOVER (Rafo log: picker opened mid "what does the light
-                # mean?"): wait for the kid to have been quiet ~3s (20s cap).
-                t0 = time.time()
-                while time.time() - t0 < 20.0 and time.time() - self.d._kid_spoke_last < 3.0:
-                    await asyncio.sleep(0.4)
-                act = self.d.actions.get("open_picker")
-                if act and self.d.scene and self.d.scene.name == "light":
-                    log.info("[LIGHT] win ridden — the world pushes to dance (picker)")
-                    await act()
-            except Exception:
-                log.exception("[LIGHT] push-to-dance failed")
-        # GC-PROOF (2026-07-16 pinpoint probe: the sleeping task vanished — no
-        # marker, no packet, no fact): hold a strong reference.
-        self._tasks.append(asyncio.create_task(_push_to_dance()))
+        # PICKER KILLED (builder, 2026-07-16: "kill the picker"): the world NEVER
+        # opens it on its own. She pushes to dance with her WORDS (celebration fact
+        # above); the picker opens only on the kid's ask/assent or the button tap.
     # kept for wiring compatibility: any touch/move report = the move
     async def on_touch(self, joint):
         await self.on_move(joint)
