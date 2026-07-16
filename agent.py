@@ -784,16 +784,14 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 # only fires in "dance", so the intro needs its own hook).
                 if event.get("event") == "try_move" and state.ctx.phase in ("recognition", "intro", "play"):
                     _act = (event.get("action") or "").lower()
-                    # DIRECTOR wiring (spec item 4): touches during the light scene
+                    # DIRECTOR wiring + 90% SUCCESS LAW (builder's verdict): during the
+                    # light scene ANY movement of the joint is the WIN — moving while
+                    # talking excitedly absolutely counts. Only dead-still-and-silent
+                    # doesn't pass (and that path is the light's twinkle, not failure talk).
                     _dir = getattr(state, "_director", None)
                     _lgt = getattr(state, "_light", None)
                     if _dir is not None and _lgt is not None and _dir.scene and _dir.scene.name == "light":
-                        _joint = "right_shoulder" if "shoulder" in _act else "left_hand"
-                        # honest hits: a body that moves while the kid is TALKING is chatter
-                        _kid_recent = max(getattr(state, "_last_kid_at", 0) or 0,
-                                          getattr(state, "last_kid_speech_at", 0) or 0)
-                        if not (_kid_recent and time.time() - _kid_recent < 1.2):
-                            asyncio.create_task(_lgt.on_touch(_joint))
+                        asyncio.create_task(_lgt.on_move("right_shoulder"))
                     elif _dir is not None:
                         asyncio.create_task(_dir.fact(f"they just did a {_act} move"))
                     if _friend_on():
@@ -4484,6 +4482,11 @@ async def entrypoint(ctx: JobContext):
                         _dir.kid_spoke()
                         if getattr(state, "_is_speaking", False):
                             asyncio.create_task(_dir.on_kid_barge_in())
+                        # 90% LAW: a spoken claim during the light scene = the win too
+                        _lgt = getattr(state, "_light", None)
+                        if (_lgt is not None and _dir.scene and _dir.scene.name == "light"
+                                and _KID_DONE_RE.search(txt)):
+                            asyncio.create_task(_lgt.on_move("right_shoulder"))
                         # QUESTION-flagged wiring: the KID's explicit dance-words must
                         # also open the picker (evidence: "'let's dance' → picker");
                         # the scene tables listen to HER words only.

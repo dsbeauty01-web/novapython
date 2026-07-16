@@ -67,10 +67,12 @@ SCENES = {
          "Never repeat a question twice in a row."),
    out_triggers=[(r"\b(let'?s|wanna|want to)\s+(dance|play|start)\b", "open_picker", True)]),
  "light": Scene("light",
-   goal=("SCENE: magic light. A real magic light has appeared on the kid's body — you can SEE "
-         "it (notes will tell you where and what it does). React with genuine wonder like you "
-         "both discovered it. Encourage them to touch it. If they talk about something else, "
-         "the conversation always wins — the light waits. Never nag about it."),
+   goal=("SCENE: magic light. A magic light glows on the kid's shoulder — you can SEE it. "
+         "Discover it with wonder and invite them to MOVE that shoulder, just a little shrug — "
+         "never to touch it. ANY little move of it is a WIN: celebrate ONCE, big, by name "
+         "(that move is called an isolation), then move on together toward dancing. If they "
+         "talk about something else, the conversation wins — the light waits. Never nag, never "
+         "encourage twice in a row; if nothing new happened, stay comfortably quiet."),
    out_triggers=[(r"\b(let'?s|wanna|want to)\s+(dance|play|start)\b", "open_picker", True)]),
  "move_to_game": Scene("move_to_game",
    goal=("SCENE: heading to a dance. Ride the excitement, help them pick or confirm the game "
@@ -141,7 +143,8 @@ class Director:
                           time.time() - self._her_audio_last)
                 self._her_audio_last = time.time()  # one alarm per window
 
-# ─── the light-challenge world behavior (visual only, max 2 twinkles) ──
+# ─── the light-challenge world behavior (ONE cue · a MOVE, never a touch ·
+#     90% success law: any shoulder movement wins; only dead-still-and-silent fails) ──
 class MagicLight:
     def __init__(self, director, light_actions):
         self.d, self.act = director, light_actions  # {'ignite':fn(joint),'jump':fn(joint),'twinkle':fn(),'dim':fn(),'sparkle':fn()}
@@ -149,20 +152,25 @@ class MagicLight:
     async def appear(self, joint="right_shoulder"):
         self.state = "shoulder"; await self.act["ignite"](joint)
         await self.d.fact(f"a magic light just appeared on the kid's {joint.replace('_',' ')} — "
-                          f"you can SEE it; discover it out loud with wonder", urgent=True)
+                          f"you can SEE it; discover it out loud with wonder and invite them to "
+                          f"MOVE that shoulder, just a little shrug (never touch)", urgent=True)
+    async def on_move(self, joint="right_shoulder"):
+        """ANY movement of the lit joint = the WIN. One celebration, then done."""
+        if self.state != "shoulder":
+            return
+        self.state = "done"; await self.act["sparkle"]()
+        await self.d.fact("they MOVED it — the light danced with their shoulder! celebrate them "
+                          "by name, ONCE, big — that move is called an isolation — then move on "
+                          "together toward the dancing", urgent=True)
+    # kept for wiring compatibility: any touch/move report = the move
     async def on_touch(self, joint):
-        if self.state == "shoulder" and "shoulder" in joint:
-            self.state = "hand"; await self.act["sparkle"](); await self.act["jump"]("left_hand")
-            await self.d.fact("they touched it! it JUMPED to their left hand — cheer and tell them to catch it", urgent=True)
-        elif self.state == "hand" and "hand" in joint:
-            self.state = "done"; await self.act["sparkle"]()
-            await self.d.fact("they CAUGHT it — fast! celebrate them by name; this move is called an isolation", urgent=True)
+        await self.on_move(joint)
     async def idle_twinkle(self):
         """Call from the detection loop when kid idle ≥10s during light scene. Max 2, then shy."""
-        if self.state in ("shoulder", "hand") and self.twinkles < 2:
+        if self.state == "shoulder" and self.twinkles < 2:
             self.twinkles += 1; await self.act["twinkle"]()
             await self.d.fact("the light is twinkling at them, a little impatient — you may voice its mood, no pressure")
-        elif self.state in ("shoulder", "hand"):
+        elif self.state == "shoulder":
             self.state = "shy"; await self.act["dim"]()
             await self.d.fact("the light got shy and dimmed away — let it go gracefully, move on together")
 
