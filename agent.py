@@ -1748,7 +1748,12 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
         if not force and getattr(model, "_inflight", 0) > 0:
             stage("nudge-skipped", f"she is mid-reply — dropped '{text[:60]}'")
             return
-        model.send_user_text(f"({text})")
+        # SPEECH-GUARD LAW (2026-07-16): force = a beat-CHANGE (celebration) — the only
+        # staged input allowed to cut her active line; everything else queues at the gate.
+        try:
+            model.send_user_text(f"({text})", preempt=force)
+        except TypeError:   # older adapters (Hume) without the preempt arg
+            model.send_user_text(f"({text})")
         logger.info(f"[FRIEND] stage nudge: {text[:70]}")
         stage("nudge", text)
 

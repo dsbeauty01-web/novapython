@@ -103,8 +103,10 @@ class GeminiVoiceAdapter:
                  or "(the dancer just appeared on screen — greet them now)"))
         return self._reply(user_input=text)
 
-    def send_user_text(self, text: str) -> bool:
-        """Typed chat = a real kid turn. Whisper notes ride along as instructions."""
+    def send_user_text(self, text: str, preempt: bool = False) -> bool:
+        """Typed chat = a real kid turn. Whisper notes ride along as instructions.
+        SPEECH-GUARD LAW (2026-07-16): preempt=True marks a beat-CHANGE (e.g. a
+        celebration) — the only producer input allowed to cut her active line."""
         self._mouth_hold = False
         if self._inflight > 0:
             # TURN QUEUE (2026-07-10 calltuns): never DROP a turn because she is
@@ -117,7 +119,7 @@ class GeminiVoiceAdapter:
                 self._pending_turn = text
             logger.info(f"[gemini] turn QUEUED (gen inflight): '{text[:50]}'")
             return True
-        return self._reply(user_input=text)
+        return self._reply(user_input=text, preempt=preempt)
 
     def clear_pending_stage(self) -> None:
         """PERSONA-FIX 5 (2026-07-10): a celebration must WIN the race against an
@@ -129,7 +131,7 @@ class GeminiVoiceAdapter:
             self._pending_turn = None
             self._pending_multi = False
 
-    def _reply(self, user_input: str) -> bool:
+    def _reply(self, user_input: str, preempt: bool = False) -> bool:
         s = self._session
         if s is None:
             logger.warning("[gemini] reply requested before bind — dropped")
@@ -156,22 +158,33 @@ class GeminiVoiceAdapter:
                 # default here left the mouth on the strict gate while the ear
                 # ran friend law — two halves of the voice on different rules.
                 _friend = os.getenv("NOVA_FRIEND", "1") == "1"
+                # SPEECH-GUARD LAW (2026-07-16, "one bug" order): nothing may cancel
+                # her ACTIVE utterance except a beat-CHANGE (preempt=True) or the kid
+                # barging in by VOICE (native VAD path, not through here). Staged
+                # nudges and typed turns QUEUE until her current line's playback ends.
+                # The old friend-mode "interruptions are native" gate let a nudge start
+                # a generation mid-word — the 06-18 log beheadings ("Look, right there
+                # on your—" cut by the re-pulse beat, "Now—" cut by picker-open).
                 def _busy():
-                    if _friend:
-                        # FRIEND MODE: interruptions are native — only a browser
-                        # clip (game phase) blocks a new turn
+                    if _friend and preempt:
+                        # beat-change keeps the native-interrupt right (clips still block)
                         return getattr(_st, "_clip_playing", False) or self._clip_playing
                     return (getattr(_st, "_is_speaking", False)
                             or getattr(_st, "_clip_playing", False)
                             or self._clip_playing)
+                _cap = 6.0 if preempt else 12.0
                 _w0 = _t.time()
-                while _t.time() - _w0 < 6.0 and _busy():
+                while _t.time() - _w0 < _cap and _busy():
                     await asyncio.sleep(0.15)
                 if _busy():
-                    logger.info(f"[MOUTH-GATE] blocked: gemini turn '{user_input[:40]}' — audio still playing after 6s, dropped")
-                    self.last_error = "mouth-gate blocked (audio playing)"
-                    self._diag("gen-blocked", text=user_input[:50])
-                    return
+                    if user_input.lstrip().startswith("("):
+                        # a staged line that found no air in 12s dies — the producer re-decides
+                        logger.info(f"[MOUTH-GATE] blocked: staged turn '{user_input[:40]}' — audio still playing after {_cap:.0f}s, dropped")
+                        self.last_error = "mouth-gate blocked (audio playing)"
+                        self._diag("gen-blocked", text=user_input[:50])
+                        return
+                    # kid words are never dropped — proceed even if late (their turn)
+                    logger.info(f"[MOUTH-GATE] kid turn proceeds after {_cap:.0f}s wait: '{user_input[:40]}'")
             t0 = _t.time()
             self._inflight += 1
             self._diag("gen-start", text=user_input[:50], inflight=self._inflight)
