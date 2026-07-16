@@ -713,10 +713,26 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 logger.info(f"[data] game-event: {event}")
                 state.push_event(event)
 
+                # DIRECTOR game facts (FINISH-THE-GAME 2026-07-16): the kid picked →
+                # loading fact; the music starts → the go-line moment; play-again → joy.
+                _SONG_NAMES = {"joined": "Up Groove!", "wave": "Wave!", "hello": "Hello Hello!"}
+                if event.get("event") == "picked":
+                    _dirp = getattr(state, "_director", None)
+                    if _dirp is not None:
+                        _nm = _SONG_NAMES.get((event.get("song") or "").strip(), "the game")
+                        asyncio.create_task(_dirp.fact(
+                            f"they picked '{_nm}'! it is loading right now (just a few seconds) — "
+                            f"ride the excitement in ONE short line while it loads", urgent=True))
+
                 # TALK SCORE (2026-07-05): the browser announces the song start —
                 # arm the per-song score; it owns the in-game voice from here.
                 if event.get("event") == "song_start":
                     _song = (event.get("song") or "").strip()
+                    _dirs = getattr(state, "_director", None)
+                    if _dirs is not None:
+                        asyncio.create_task(_dirs.fact(
+                            "the music is STARTING right now — give ONE big go-line, then the "
+                            "music leads and you stay mostly quiet", urgent=True))
                     state._talk_t0 = time.time() - float(event.get("sec", 0) or 0)
                     # fresh round: ending trackers reset (play-again replays in-session)
                     state._goodbye_ran = False
@@ -737,7 +753,12 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 if event.get("event") == "play_again":
                     state._goodbye_skip = True
                     logger.info("[ENDING] play-again → goodbye skipped (deposit stays)")
-                    asyncio.create_task(_nova_say(session, "AGAIN?! okay okay—"))
+                    _dira = getattr(state, "_director", None)
+                    if _dira is not None:
+                        asyncio.create_task(_dira.fact(
+                            "they chose to dance AGAIN — pure joy! ride it in ONE excited line", urgent=True))
+                    else:
+                        asyncio.create_task(_nova_say(session, "AGAIN?! okay okay—"))
 
                 # If a hit/miss happened during DANCE, react immediately.
                 # PHASE 3: the router also handles song moments + edge events.
@@ -3780,9 +3801,14 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
         async def send_sparkle_sfx():
             await _send_pkt({"kind": "sfx", "name": "sparkle"})
 
+        async def send_mute_alarm(scene_name: str):
+            await _send_pkt({"kind": "stage-diag", "decision": "MUTE-ALARM",
+                             "reason": f"she has been silent 25s+ in scene '{scene_name}' while the kid talks"})
+
         director = Director(session, actions={
             "open_picker": send_open_picker_packet,
             "start_game":  start_game_handoff,
+            "mute_alarm":  send_mute_alarm,
         }, persona=PERSONA_TEXT, rebuild_instructions=_rebuild_instructions)
         light = MagicLight(director, light_actions={
             "ignite": lambda j: _light_pkt("ignite", j), "jump": lambda j: _light_pkt("jump", j),

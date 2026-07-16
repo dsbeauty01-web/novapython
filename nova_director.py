@@ -141,6 +141,13 @@ class Director:
                 log.error("[ALARM] MUTE scene=%s her_last=%.1fs ago",
                           self.scene.name if self.scene else "?",
                           time.time() - self._her_audio_last)
+                # FINISH-THE-GAME: surface the alarm in the session auto-log too
+                alarm = self.actions.get("mute_alarm")
+                if alarm:
+                    try:
+                        await alarm(self.scene.name if self.scene else "?")
+                    except Exception:
+                        pass
                 self._her_audio_last = time.time()  # one alarm per window
 
 # ─── the light-challenge world behavior (ONE cue · a MOVE, never a touch ·
