@@ -169,7 +169,10 @@ class GeminiVoiceAdapter:
                     if _friend and preempt:
                         # beat-change keeps the native-interrupt right (clips still block)
                         return getattr(_st, "_clip_playing", False) or self._clip_playing
+                    _pending = (not getattr(_st, "_is_speaking", False)
+                                and _t.time() < getattr(self, "_await_playback_until", 0.0))
                     return (getattr(_st, "_is_speaking", False)
+                            or _pending
                             or getattr(_st, "_clip_playing", False)
                             or self._clip_playing)
                 _cap = 6.0 if preempt else 12.0
@@ -191,6 +194,12 @@ class GeminiVoiceAdapter:
             try:
                 await s.generate_reply(**kwargs)
                 self.last_error = None
+                # SPEECH-GUARD race bridge (2026-07-16 probe: "Six and strong! Ready
+                # to move those" beheaded): between gen-done and the audio actually
+                # STARTING, _is_speaking is still False — the mouth-gate saw quiet and
+                # let the next staged turn cut the buffered reply. Hold the gate busy
+                # until playback begins (2.5s cap covers zero-audio replies).
+                self._await_playback_until = _t.time() + 2.5
                 self._diag("gen-done", text=user_input[:50], elapsed=round(_t.time() - t0, 2))
             except Exception as e:
                 # VOICE-SILENCE DEBUG (2026-07-09): keep the failure text so the
