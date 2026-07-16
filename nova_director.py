@@ -149,6 +149,7 @@ class MagicLight:
     def __init__(self, director, light_actions):
         self.d, self.act = director, light_actions  # {'ignite':fn(joint),'jump':fn(joint),'twinkle':fn(),'dim':fn(),'sparkle':fn()}
         self.state, self.twinkles = "off", 0
+        self._tasks = []   # strong refs: unreferenced asyncio tasks get GC'd mid-sleep
     async def appear(self, joint="right_shoulder"):
         self.state = "shoulder"; await self.act["ignite"](joint)
         await self.d.fact(f"a magic light just appeared on the kid's {joint.replace('_',' ')} — "
@@ -167,12 +168,17 @@ class MagicLight:
                           urgent=True)
 
         async def _push_to_dance():
-            await asyncio.sleep(7.0)   # her celebration's air time
-            act = self.d.actions.get("open_picker")
-            if act and self.d.scene and self.d.scene.name == "light":
-                log.info("[LIGHT] win ridden — the world pushes to dance (picker)")
-                await act()
-        asyncio.create_task(_push_to_dance())
+            try:
+                await asyncio.sleep(7.0)   # her celebration's air time
+                act = self.d.actions.get("open_picker")
+                if act and self.d.scene and self.d.scene.name == "light":
+                    log.info("[LIGHT] win ridden — the world pushes to dance (picker)")
+                    await act()
+            except Exception:
+                log.exception("[LIGHT] push-to-dance failed")
+        # GC-PROOF (2026-07-16 pinpoint probe: the sleeping task vanished — no
+        # marker, no packet, no fact): hold a strong reference.
+        self._tasks.append(asyncio.create_task(_push_to_dance()))
     # kept for wiring compatibility: any touch/move report = the move
     async def on_touch(self, joint):
         await self.on_move(joint)
