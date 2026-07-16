@@ -146,6 +146,12 @@ class GeminiVoiceAdapter:
         if _st_lang == "he":
             _he_law = "(דברי עברית בלבד — אף מילה באנגלית, גם אם ההנחיה כתובה באנגלית)"
             kwargs["instructions"] = (kwargs.get("instructions", "") + " " + _he_law).strip()
+        else:
+            # LANGUAGE LOCK EN (2026-07-16, live session: the ear misheard the kid as
+            # German and she ANSWERED in German): English sessions answer in English,
+            # always — never mirror a misheard language.
+            _en_law = "(speak English ONLY — even if the child seems to speak another language, answer warmly in English)"
+            kwargs["instructions"] = (kwargs.get("instructions", "") + " " + _en_law).strip()
 
         async def _go():
             import time as _t

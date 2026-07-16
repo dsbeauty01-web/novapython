@@ -3722,6 +3722,12 @@ async def entrypoint(ctx: JobContext):
             except Exception as pe:
                 logger.exception(f"[nova-gemini] prompt build FAILED → minimal prompt: {pe}")
                 evi_prompt = "You are NOVA, a warm magical movement friend. Short playful replies, always lead toward a dance."
+            # LANGUAGE LOCK (2026-07-16, live session: ear misheard the kid as German
+            # and she answered in German — native VAD replies read ONLY this prompt):
+            if state.ctx.lang != "he" and evi_prompt:
+                evi_prompt += ("\n\nLANGUAGE LAW (absolute): you speak ENGLISH ONLY. Even if the "
+                               "child seems to speak another language or the transcription looks "
+                               "foreign, answer warmly in English. Never switch languages.")
             _gemini_adapter = GeminiVoiceAdapter(system_prompt=evi_prompt)
             _gemini_adapter._ears_open = False   # door CLOSED until reveal (same law as EVI)
             _gemini_adapter._mouth_hold = True
