@@ -1878,6 +1878,125 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             await asyncio.sleep(0.4)
         return False
 
+    async def _zone2_light_moment() -> bool:
+        """ZONE 2 · shared discovery — she SEES the light, she doesn't cause it.
+        The light ignites instantly (harmless visual); every WORD waits for a real
+        conversational pause and yields to kid speech. Returns True = producer done
+        (picker opened / session left the intro)."""
+        state._challenge_active = "shoulder"   # cue lock — her words can't re-cue
+        state._friend_hit = None
+
+        async def quiet_beat(min_her=3.0, min_kid=2.5):
+            while state.active and not state.game_done.is_set():
+                if state.ctx.phase not in ("intro", "recognition") or _wants_dance_now():
+                    return False
+                her = time.time() - (getattr(state, "_last_nova_at", 0) or 0)
+                kid = (time.time() - _kid_last()) if _kid_last() else 1e9
+                infl = getattr(model, "_inflight", 0) if model is not None else 0
+                if not _audio_playing(state) and not infl and her > min_her and kid > min_kid:
+                    return True
+                await asyncio.sleep(0.2)
+            return False
+
+        async def say_beat(text, force=False):
+            """One director note → her words. If the kid speaks before her line
+            starts, the note is dropped and retried at the next pause."""
+            for _ in range(3):
+                if not await quiet_beat():
+                    return False
+                k0 = _kid_last()
+                nudge(text, force=force)
+                started = await _wait_playback_start(state, 8.0)
+                if not started and _kid_last() > k0:
+                    if model is not None and hasattr(model, "clear_pending_stage"):
+                        model.clear_pending_stage()
+                    stage("z2-yield", "kid spoke — conversation wins, the light keeps pulsing")
+                    continue
+                if started:
+                    await _wait_playback_end(state, grace=0.3)
+                return True
+            return True
+
+        async def wait_touch(timeout, since):
+            t0w = time.time()
+            while time.time() - t0w < timeout and state.active and not state.game_done.is_set():
+                if _wants_dance_now():
+                    return "__dance__"
+                hit = getattr(state, "_friend_hit", None)
+                if hit:
+                    state._friend_hit = None
+                    # HONEST HITS (Shuki log): a shoulder that moves while they're
+                    # TALKING is chatter, not the move
+                    if _kid_last() and time.time() - _kid_last() < 1.2:
+                        stage("z2-hit-ignored", "moved while talking — not the move")
+                        continue
+                    return hit
+                if _kid_claims_done(state, since):
+                    return "__claimed__"
+                await asyncio.sleep(0.15)
+            return None
+
+        # 1 · IGNITE — instant, silent, patient (visual + soft chime only)
+        await send({"kind": "cue-part", "part": "shoulder", "joint": "right_shoulder"})
+        await send({"kind": "sfx", "name": "sparkle"})
+        stage("z2-ignite", "light ON (right shoulder) — no words yet")
+
+        # 2 · DISCOVERY — her words, only at a real pause
+        ok = await say_beat("stage: a magic light just IGNITED on their right shoulder — you can "
+                            "SEE it glowing. discover it out loud with real wonder, your own words — "
+                            "you did NOT make it happen. point at it, wonder together, invite a touch")
+        if not ok:
+            if _wants_dance_now():
+                await open_picker("kid asked to dance during the light — fast-path", fast=True)
+                return True
+            return state.ctx.phase not in ("intro", "recognition")
+        disc_at = time.time()
+
+        # 3 · THE TOUCH — with the idle law: the LIGHT gets playful, never her nagging
+        touch = None
+        for attempt in range(3):
+            touch = await wait_touch(12.0, disc_at)
+            if touch:
+                break
+            if attempt < 2:
+                await send({"kind": "cue-part", "part": "shoulder", "joint": "right_shoulder"})
+                await send({"kind": "sfx", "name": "sparkle"})
+                stage("z2-twinkle", f"idle — the light twinkles (#{attempt + 1})")
+                await say_beat("stage: the little light is twinkling at them, almost teasing — you MAY "
+                               "voice the light's playful mood in ONE tiny line ('I think it likes you…'), zero pressure")
+        if touch == "__dance__":
+            await open_picker("kid asked to dance during the light — fast-path", fast=True)
+            return True
+        if not touch:
+            stage("z2-shy", "no touch after 2 twinkles — the light gets shy and dims")
+            await say_beat("stage: the little light got shy and faded away — ONE warm line, zero fail-feeling, never say they missed")
+            state._challenge_active = None
+            return False
+
+        # 4 · THE JUMP — wordless magic, then she rides it live
+        await send({"kind": "sfx", "name": "sparkle"})
+        await send({"kind": "cue-part", "part": "left", "joint": "left_wrist"})
+        state._challenge_active = "left"
+        state._friend_hit = None
+        stage("z2-jump", "touched! the light JUMPED to the left hand (wordless)")
+        await say_beat("stage: they TOUCHED it and it JUMPED to their left hand! ride it live — amazed, "
+                       "one short line, invite the catch in your own words", force=True)
+        catch = await wait_touch(12.0, time.time())
+        if catch == "__dance__":
+            await open_picker("kid asked to dance during the light — fast-path", fast=True)
+            return True
+
+        # 5 · PAYOFF — truth only
+        if catch:
+            await send({"kind": "sfx", "name": "sparkle"})
+            gesture("clap_clap")
+            await say_beat("stage: they CAUGHT it! cheer ONE short burst — their name, their joy — and "
+                           "tell them that shoulder move is called an ISOLATION", force=True)
+        else:
+            await say_beat("stage: the light slipped away giggling — ONE warm line, zero fail-feeling")
+        state._challenge_active = None
+        return False
+
     # ═══ NOVA-ZONES (2026-07-16, builder's spec — replaces all prior intro
     # behavior): the session is TIME-BOXED ZONES. Inside a pure V2V zone the
     # producer is DEAD — no notes, no nudges, no silence timers, no context
@@ -1905,27 +2024,33 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             await asyncio.sleep(0.3)
         if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
             return
-        # SEAM · Zone 2 arming: fires ONLY at true dual silence (~2s neither spoke)
-        # — nothing can be interrupted during silence, the seam is interference-free.
+        # SEAM · builder's law (2026-07-16): the LIGHT is harmless — it can ignite
+        # any time (visual only, zero speech impact). Only HER WORDS wait for a
+        # real quiet beat, inside the light moment itself.
         state._zone = "seam-1-2"
-        stage("zone2-armed", "seam: waiting for TRUE 2s dual silence (kid speech always wins)")
+        stage("zone2-armed", "seam reached — light may ignite; her words wait for a real pause")
+        state._zone = 2
+        stage("zone2-enter", "the light moment begins (shared discovery)")
+        if await _zone2_light_moment():
+            return
+        # ZONE 3 · PURE V2V again — producer dead; she rides the win and steers
+        # to the dance herself. Only the go-moment listener stays awake.
+        state._zone = 3
+        stage("zone3-enter", "PURE V2V — she rides the win; go-moment listener only")
+        _go_re = __import__("re").compile(
+            r"(pick|choose|which).{0,30}(game|dance)|let'?s (dance|play|go)|ready to (dance|play)", __import__("re").I)
         while state.active and not state.game_done.is_set():
-            if _wants_dance_now():
-                await open_picker("kid asked to dance at the seam — fast-path", fast=True)
-                return
             if state.ctx.phase not in ("intro", "recognition"):
                 return
-            _quiet = (not _audio_playing(state)
-                      and getattr(model, "_inflight", 0) == 0
-                      and time.time() - _kid_last() > 2.0
-                      and time.time() - (getattr(state, "_last_nova_at", 0) or 0) > 2.0)
-            if _quiet:
-                break
-            await asyncio.sleep(0.2)
-        state._zone = 2
-        stage("zone2-enter", "true silence found — the light moment begins")
-        # (Zone 2 proper — shared discovery — is the NEXT build stage; until then
-        # the existing magic-dialogue beats run inside the zone boundary.)
+            if _wants_dance_now():
+                await open_picker("kid asked to dance — go-moment", fast=True)
+                return
+            _hers = str(getattr(state, "_last_nova_text", "") or "")
+            if _go_re.search(_hers) and not _audio_playing(state):
+                await open_picker("her push words — go-moment")
+                return
+            await asyncio.sleep(0.25)
+        return
     else:
         # ── legacy path (NOVA_ZONES=0): the SMART-INTRO bonding window ──
         if await _legacy_bonding():
@@ -4156,6 +4281,7 @@ async def entrypoint(ctx: JobContext):
             if role == "assistant" and txt:
                 state.bump("replies")
                 state._last_nova_at = time.time()   # FIX 4: silence-driver clock
+                state._last_nova_text = txt         # ZONES: go-moment listener reads her push words
                 state._typed_reply_pending = 0      # her reply landed — clips unblocked
                 logger.info(f"[SPEAK] Nova said → '{txt}'")
                 # SMART-INTRO Part 7: HER words reach the session log word-for-word
