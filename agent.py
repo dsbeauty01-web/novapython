@@ -375,6 +375,20 @@ class NovaSessionState:
             if new_phase in ("recognition", "dance", "goodbye"):
                 logger.info(f"[state] phase {self.ctx.phase} → {new_phase}")
                 self.ctx.phase = new_phase
+                # DIRECTOR wiring (spec item 6): phase boundaries → scenes
+                _dir = getattr(self, "_director", None)
+                if _dir is not None:
+                    if new_phase == "dance":
+                        asyncio.create_task(_dir.enter_scene("dance"))
+                    elif new_phase == "goodbye":
+                        async def _ending(_d=_dir, _s=self):
+                            await _d.enter_scene("ending")
+                            _hits = getattr(_s.ctx, "hits", 0) or 0
+                            _streak = getattr(_s, "_best_streak_today", None) or getattr(_s.ctx, "streak", 0)
+                            _acts = ", ".join(sorted(getattr(_s, "_hit_actions", set()))) or "moving along"
+                            await _d.fact(f"song ended. highlights: {_hits} moves landed, best streak {_streak}, "
+                                          f"strongest: {_acts}", urgent=True)
+                        asyncio.create_task(_ending())
                 # V2V STAGES 1+5: the ears door follows the phase — open for
                 # conversation, CLOSED the moment a song plays (she must never
                 # listen to the music), open again for the goodbye.
@@ -712,7 +726,12 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     state.ctx.hits = 0
                     state.ctx.streak = 0
                     logger.info(f"[TALK-SCORE] song_start '{_song}' (sec={event.get('sec', 0)})")
-                    asyncio.create_task(_run_talk_score(session, state, _song))
+                    if getattr(state, "_director", None) is None:
+                        asyncio.create_task(_run_talk_score(session, state, _song))
+                    else:
+                        # DIRECTOR (FINAL BUILD): scripted in-game speech is DEAD —
+                        # music+lights run the game; she gets section facts only.
+                        logger.info("[DIRECTOR] talk-score conductor NOT armed — dance is hers")
 
                 # ENDING: play-again = pure delight, goodbye skipped, deposit already saved
                 if event.get("event") == "play_again":
@@ -727,7 +746,29 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     "music_moment", "section", "rep_done", "free_fun", "idle",
                     "second_person", "singing", "mic_text", "away",
                 ):
-                    if getattr(state, "_talk_score_active", False):
+                    # DIRECTOR (FINAL BUILD): in-game events become FACTS — she
+                    # speaks only when SHE chooses, at natural gaps. No scripted
+                    # speech, no phrase banks, no forced generation.
+                    _dir = getattr(state, "_director", None)
+                    if _dir is not None:
+                        _ev = event.get("event")
+                        _fact = {"hit": f"they nailed a {event.get('action', 'move')}",
+                                 "first_hit": "their FIRST hit just landed",
+                                 "freeze_hit": f"they held the freeze {event.get('hold', '')}".strip(),
+                                 "miss": None, "freeze_miss": None, "music_tick": None,
+                                 "section": "a song section just ended — a natural gap if you want ONE short hype line",
+                                 "rep_done": None,
+                                 "free_fun": "they're freestyling with joy",
+                                 "idle": None,
+                                 "second_person": "someone else stepped into the frame",
+                                 "singing": "they're singing along!",
+                                 "away": "they stepped out of the frame",
+                                 }.get(_ev)
+                        if _ev == "mic_text" and event.get("text"):
+                            _fact = f"they said to you: \"{str(event.get('text'))[:80]}\""
+                        if _fact:
+                            asyncio.create_task(_dir.fact(_fact, urgent=(_ev in ("section", "mic_text"))))
+                    elif getattr(state, "_talk_score_active", False):
                         # the score is the conductor: real hits get the per-song echo;
                         # routine router chatter is suppressed (kid speech still routes).
                         if event.get("event") in ("hit", "first_hit", "clean_hit", "freeze_hit"):
@@ -743,6 +784,18 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                 # only fires in "dance", so the intro needs its own hook).
                 if event.get("event") == "try_move" and state.ctx.phase in ("recognition", "intro", "play"):
                     _act = (event.get("action") or "").lower()
+                    # DIRECTOR wiring (spec item 4): touches during the light scene
+                    _dir = getattr(state, "_director", None)
+                    _lgt = getattr(state, "_light", None)
+                    if _dir is not None and _lgt is not None and _dir.scene and _dir.scene.name == "light":
+                        _joint = "right_shoulder" if "shoulder" in _act else "left_hand"
+                        # honest hits: a body that moves while the kid is TALKING is chatter
+                        _kid_recent = max(getattr(state, "_last_kid_at", 0) or 0,
+                                          getattr(state, "last_kid_speech_at", 0) or 0)
+                        if not (_kid_recent and time.time() - _kid_recent < 1.2):
+                            asyncio.create_task(_lgt.on_touch(_joint))
+                    elif _dir is not None:
+                        asyncio.create_task(_dir.fact(f"they just did a {_act} move"))
                     if _friend_on():
                         # FRIEND MODE: the WOW is instant SFX + light (non-verbal,
                         # nothing to lipsync) — the producer's challenge loop sees
@@ -2842,6 +2895,7 @@ async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: 
     # Answers land in memory (feedback_*) + [FEEDBACK] logs. Skipped for
     # play-again / empty room. Each question waits for the kid's turn (10s cap).
     if (getattr(state, "_end_interview", False)
+            and getattr(state, "_director", None) is None   # FINAL BUILD: director mode = her own words, fact-driven
             and not getattr(state, "_goodbye_skip", False)
             and not getattr(state, "_kid_away", False)):
         async def _kid_turn(ask_at: float, cap: float = 10.0):
@@ -2872,6 +2926,20 @@ async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: 
                     await asyncio.sleep(0.3)
         except Exception as _fe:
             logger.warning(f"[FEEDBACK] interview error: {_fe}")
+
+    # DIRECTOR (FINAL BUILD): the scripted goodbye ceremony is DEAD — the ending
+    # scene + highlight facts already reached her (phase watcher); the deposit is
+    # saved above; she says the callback + tomorrow-plant + bye in HER OWN words.
+    _dir = getattr(state, "_director", None)
+    if _dir is not None:
+        try:
+            _fb = (" first, gently ask how it was for them — fun? favorite part? — and listen;"
+                   if getattr(state, "_end_interview", False) else "")
+            await _dir.fact(f"goodbye time.{_fb} a lovely thing to plant for tomorrow: {dep_line}", urgent=True)
+        except Exception:
+            pass
+        logger.info("[ENDING] director mode — her own goodbye (no scripted lines)")
+        return
 
     if getattr(state, "_goodbye_skip", False):          # play-again: pure delight, no ceremony
         lines = ["AGAIN?! okay okay—"]
@@ -3656,7 +3724,103 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
     # FRIEND MODE (NOVA_FRIEND=1): the conversation is HERS — the producer
     # runs backstage only (lights, SFX, picker); instant rollback via the flag.
     if _friend_on():
-        await run_friend_intro(session, state, agent, room)
+        # ═══ FINAL BUILD (2026-07-16, builder's spec — verbatim wiring): the
+        # Director replaces the producer. V2V owns every word; the director sends
+        # only SCENES, GOALS, TRIGGERS; knowledge = system items; zero forced
+        # generation; zero timers on anyone's mouth.
+        from nova_director import Director, MagicLight, PERSONA_TEXT
+
+        async def _rebuild_instructions(text: str):
+            state._voice_prompt_override = text
+            await agent.update_instructions(text)
+
+        async def _send_pkt(pkt: dict):
+            try:
+                await ctx.room.local_participant.publish_data(
+                    json.dumps(pkt).encode("utf-8"), reliable=True)
+            except Exception as e:
+                logger.warning(f"[DIRECTOR] packet failed: {e}")
+
+        async def send_open_picker_packet():
+            state._dance_invited = True
+            logger.info("[DIRECTOR] action: open_picker")
+            await _send_pkt({"kind": "go-picker"})
+
+        async def start_game_handoff():
+            # QUESTION-flagged mapping: the game itself starts on the kid's pick in
+            # the browser (transition engine); the worker's closest action = make
+            # sure the picker is on stage. Ears close on the phase packet as today.
+            logger.info("[DIRECTOR] action: start_game (→ picker on stage)")
+            await _send_pkt({"kind": "go-picker"})
+
+        _JOINTMAP = {"right_shoulder": ("shoulder", "right_shoulder"),
+                     "left_hand": ("left", "left_wrist")}
+
+        async def _light_pkt(kind, joint=None):
+            if kind in ("ignite", "jump") and joint in _JOINTMAP:
+                part, j = _JOINTMAP[joint]
+                await _send_pkt({"kind": "cue-part", "part": part, "joint": j})
+                if kind == "jump":
+                    await _send_pkt({"kind": "sfx", "name": "sparkle"})
+            elif kind == "twinkle":
+                await _send_pkt({"kind": "sfx", "name": "sparkle"})
+            elif kind == "dim":
+                # QUESTION-flagged: no dim packet exists browser-side; the cue glow
+                # expires on its own (20s freshness) — dim is a log-only action.
+                logger.info("[DIRECTOR] light dim (browser cue will expire on its own)")
+
+        async def send_sparkle_sfx():
+            await _send_pkt({"kind": "sfx", "name": "sparkle"})
+
+        director = Director(session, actions={
+            "open_picker": send_open_picker_packet,
+            "start_game":  start_game_handoff,
+        }, persona=PERSONA_TEXT, rebuild_instructions=_rebuild_instructions)
+        light = MagicLight(director, light_actions={
+            "ignite": lambda j: _light_pkt("ignite", j), "jump": lambda j: _light_pkt("jump", j),
+            "twinkle": lambda: _light_pkt("twinkle"), "dim": lambda: _light_pkt("dim"),
+            "sparkle": send_sparkle_sfx,
+        })
+        state._director, state._light = director, light
+        asyncio.create_task(director.mute_watchdog())
+        await director.enter_scene("intro")
+
+        # WORLD EVENT (spec item 5): ~20s after her first word AND 2s of shared
+        # silence → the light scene. A world event, not a mouth timer.
+        async def _light_world_timer():
+            while state.active and not state.game_done.is_set():
+                if (getattr(state, "_last_nova_at", 0) or 0) > 0:
+                    break
+                await asyncio.sleep(0.25)
+            first = getattr(state, "_last_nova_at", 0) or time.time()
+            while state.active and not state.game_done.is_set():
+                if state.ctx.phase not in ("intro", "recognition"):
+                    return
+                now = time.time()
+                kid_q = now - max(getattr(state, "_last_kid_at", 0) or 0,
+                                  getattr(state, "last_kid_speech_at", 0) or 0)
+                her_q = now - (getattr(state, "_last_nova_at", 0) or 0)
+                if now - first > 20.0 and kid_q > 2.0 and her_q > 2.0 and not _audio_playing(state):
+                    break
+                await asyncio.sleep(0.25)
+            if (not state.active or state.game_done.is_set()
+                    or state.ctx.phase not in ("intro", "recognition")):
+                return
+            await director.enter_scene("light")
+            await light.appear("right_shoulder")
+            # spec item 4: idle ≥10s in the light scene → the LIGHT plays, never her
+            idle_mark = time.time()
+            while (state.active and not state.game_done.is_set()
+                   and director.scene and director.scene.name == "light"
+                   and light.state in ("shoulder", "hand")
+                   and state.ctx.phase in ("intro", "recognition")):
+                last_kid = max(getattr(state, "_last_kid_at", 0) or 0,
+                               getattr(state, "last_kid_speech_at", 0) or 0, idle_mark)
+                if time.time() - last_kid > 10.0:
+                    await light.idle_twinkle()
+                    idle_mark = time.time()
+                await asyncio.sleep(0.5)
+        asyncio.create_task(_light_world_timer())
     else:
         await run_intro_turns(session, state, agent, room)
 
@@ -4285,6 +4449,11 @@ async def entrypoint(ctx: JobContext):
                 state.bump("replies")
                 state._last_nova_at = time.time()   # FIX 4: silence-driver clock
                 state._last_nova_text = txt         # ZONES: go-moment listener reads her push words
+                # DIRECTOR wiring (spec item 2): her words → triggers + audio bookkeeping
+                _dir = getattr(state, "_director", None)
+                if _dir is not None:
+                    _dir.her_audio_frame()
+                    asyncio.create_task(_dir.on_her_transcript(txt))
                 state._typed_reply_pending = 0      # her reply landed — clips unblocked
                 logger.info(f"[SPEAK] Nova said → '{txt}'")
                 # SMART-INTRO Part 7: HER words reach the session log word-for-word
@@ -4305,6 +4474,12 @@ async def entrypoint(ctx: JobContext):
             elif role == "user" and txt:
                 if not txt.startswith("("):     # synthetic nudges aren't the kid talking
                     state._last_kid_at = time.time()   # FIX 4: silence-driver clock
+                    # DIRECTOR wiring (spec item 3): kid final transcript + barge-in
+                    _dir = getattr(state, "_director", None)
+                    if _dir is not None:
+                        _dir.kid_spoke()
+                        if getattr(state, "_is_speaking", False):
+                            asyncio.create_task(_dir.on_kid_barge_in())
                 logger.info(f"[HEAR] confirmed user msg → '{txt}'")
     except Exception as e:
         logger.warning(f"[hook] conversation_item_added unavailable: {e}")
