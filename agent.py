@@ -3745,6 +3745,10 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
             state._dance_invited = True
             logger.info("[DIRECTOR] action: open_picker")
             await _send_pkt({"kind": "go-picker"})
+            await director.enter_scene("move_to_game")
+            await director.fact("the picker is on their screen with exactly three games: "
+                                "'Hello Hello!', 'Up Groove!' and 'Wave!' — help them pick one "
+                                "(never invent other games)", urgent=True)
 
         async def start_game_handoff():
             # QUESTION-flagged mapping: the game itself starts on the kid's pick in
@@ -4480,6 +4484,16 @@ async def entrypoint(ctx: JobContext):
                         _dir.kid_spoke()
                         if getattr(state, "_is_speaking", False):
                             asyncio.create_task(_dir.on_kid_barge_in())
+                        # QUESTION-flagged wiring: the KID's explicit dance-words must
+                        # also open the picker (evidence: "'let's dance' → picker");
+                        # the scene tables listen to HER words only.
+                        if (_dir.scene and _dir.scene.name in ("intro", "light")
+                                and _re.search(r"\b(let'?s|wanna|want to)\s+(dance|play|start)\b", txt, _re.I)
+                                and "open_picker" in _dir.actions
+                                and (_dir.scene.name + ":kid_open_picker") not in _dir._fired):
+                            _dir._fired.add(_dir.scene.name + ":kid_open_picker")
+                            logger.info("[TRIGGER-OUT] kid dance-words → open_picker")
+                            asyncio.create_task(_dir.actions["open_picker"]())
                 logger.info(f"[HEAR] confirmed user msg → '{txt}'")
     except Exception as e:
         logger.warning(f"[hook] conversation_item_added unavailable: {e}")
