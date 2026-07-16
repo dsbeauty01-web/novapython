@@ -3734,7 +3734,9 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
 
         async def _send_pkt(pkt: dict):
             try:
-                await ctx.room.local_participant.publish_data(
+                # `room` (the _run_nova param) — NOT ctx.room: this scope has no ctx,
+                # and the NameError was silently eaten here, dropping EVERY packet.
+                await room.local_participant.publish_data(
                     json.dumps(pkt).encode("utf-8"), reliable=True)
             except Exception as e:
                 logger.warning(f"[DIRECTOR] packet failed: {e}")
