@@ -1858,15 +1858,21 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             if idle:
                 await asyncio.sleep(0.3)
                 continue    # TRUE IDLE: glow only, zero lines, wait for the kid
-            if retries == 0 and el > 12.0:
+            # TURN CLOCK FIX (2026-07-16, live: greet ended 19.608s, re-ask fired
+            # 19.611s — 3ms later): silence is measured from when HER LAST LINE
+            # ENDED, not from producer start. The kid gets a real turn to inhale.
+            _q = time.time() - max(t0, getattr(state, "_last_nova_at", 0) or 0)
+            if _audio_playing(state):
+                _q = 0.0   # she is mid-line — nobody is being ignored
+            if retries == 0 and _q > 12.0:
                 retries = 1
-                stage("silence-retry-1", f"no reply {el:.0f}s — one gentle re-ask")
+                stage("silence-retry-1", f"no reply {_q:.0f}s after her line — one gentle re-ask")
                 nudge("stage: they haven't answered yet — ONE gentle, warm little re-ask, super short")
-            elif retries == 1 and el > 24.0:
+            elif retries == 1 and _q > 20.0:
                 retries = 2
-                stage("silence-retry-2", f"still quiet {el:.0f}s — one softer attempt")
+                stage("silence-retry-2", f"still quiet {_q:.0f}s — one softer attempt")
                 nudge("stage: still quiet — ONE even softer, tinier line, no pressure at all")
-            elif retries == 2 and el > 34.0:
+            elif retries == 2 and _q > 28.0:
                 idle = True
                 stage("idle", "2 attempts done — going quiet (glow only) until the kid returns")
         await asyncio.sleep(0.4)
