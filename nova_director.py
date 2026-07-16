@@ -152,6 +152,9 @@ class MagicLight:
         self._tasks = []   # strong refs: unreferenced asyncio tasks get GC'd mid-sleep
     async def appear(self, joint="right_shoulder"):
         self.state = "shoulder"; await self.act["ignite"](joint)
+        # ARMING DELAY (Rafo log: typing-motion won the challenge before the kid
+        # even met the light): moves count only after she's had air to introduce it.
+        self._armed_at = time.time() + 5.0
         await self.d.fact(f"a magic light just appeared on the kid's {joint.replace('_',' ')} — "
                           f"you can SEE it; discover it out loud with wonder and invite them to "
                           f"MOVE that shoulder, just a little shrug (never touch)", urgent=True)
@@ -160,6 +163,9 @@ class MagicLight:
         PUSHES to the dance (builder: 'after the challenge push to dance mode —
         one light cue and go dancing, unless the user wants to stay')."""
         if self.state != "shoulder":
+            return
+        if time.time() < getattr(self, "_armed_at", 0.0):
+            log.info("[LIGHT] move before the light was introduced — not counted")
             return
         self.state = "done"; await self.act["sparkle"]()
         await self.d.fact("they MOVED it — the light danced with their shoulder! celebrate them "
@@ -170,6 +176,11 @@ class MagicLight:
         async def _push_to_dance():
             try:
                 await asyncio.sleep(7.0)   # her celebration's air time
+                # NO TAKEOVER (Rafo log: picker opened mid "what does the light
+                # mean?"): wait for the kid to have been quiet ~3s (20s cap).
+                t0 = time.time()
+                while time.time() - t0 < 20.0 and time.time() - self.d._kid_spoke_last < 3.0:
+                    await asyncio.sleep(0.4)
                 act = self.d.actions.get("open_picker")
                 if act and self.d.scene and self.d.scene.name == "light":
                     log.info("[LIGHT] win ridden — the world pushes to dance (picker)")
