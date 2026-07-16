@@ -3742,7 +3742,11 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
         async def send_open_picker_packet():
             state._dance_invited = True
             logger.info("[DIRECTOR] action: open_picker")
+            await _send_pkt({"kind": "stage-diag", "decision": "picker",
+                             "reason": "director push — go-picker sent"})
             await _send_pkt({"kind": "go-picker"})
+            await asyncio.sleep(1.5)
+            await _send_pkt({"kind": "go-picker"})   # belt: data channel drops happen
             await director.enter_scene("move_to_game")
             await director.fact("the picker is on their screen with exactly three games: "
                                 "'Hello Hello!', 'Up Groove!' and 'Wave!' — help them pick one "
