@@ -1403,6 +1403,12 @@ def _whisper(state, channel: str, text: str) -> bool:
     model = getattr(state, "_evi_model", None)
     if model is None or not _v2v_on():
         return False
+    # NOVA-ZONES pure-zone law: inside a pure V2V zone NOTHING touches her
+    # session — not even awareness writes. Whispers resume at the seams.
+    if (os.getenv("NOVA_ZONES", "1") == "1"
+            and getattr(state, "_zone", None) in (1, 3, "seam-1-2")):
+        logger.info(f"[ZONE] whisper suppressed in pure zone {state._zone} ({channel}: {text[:60]})")
+        return False
     try:
         ok = model.push_context(f"(RIGHT NOW — {channel}: {text})")
         logger.info(f"[WHISPER] {channel}: {text[:100]}")
@@ -1823,62 +1829,109 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             await send({"kind": "go-picker"})
         logger.info("[FRIEND] picker opened — game phases are packet-driven from here")
 
-    # 1. THE BONDING WINDOW (SMART-INTRO Part 2+3): pure conversation. She
-    # drives; we watch. Quiet kid → 2 gentle attempts then TRUE IDLE (fix 3).
-    # Kid says dance → fast-path any time (fix 2). Light only after name +
-    # minimum bond + a genuine lull (fix 1).
-    # LEAD (2026-07-11, builder's call): she LEADS — name + ONE beat, then the
-    # lights. 20s of bonding read as aimless chit-chat in the live session.
-    MIN_CHAT = float(os.getenv("NOVA_FRIEND_MIN_CHAT_SEC", "12"))
-    MAX_CHAT = float(os.getenv("NOVA_FRIEND_CHAT_SEC", "75"))
-    retries, idle = 0, False
-    while (state.active and not state.game_done.is_set()
-           and state.ctx.phase in ("intro", "recognition")):
-        el = time.time() - t0
-        if _wants_dance_now():
-            await open_picker("kid asked to dance mid-chat — fast-path", fast=True)
-            return
-        k = _kid_last()
-        if k > t0:  # the kid has engaged at least once
-            if idle:
-                idle = False
-                retries = 0
-                stage("resume", "kid is back after idle — warm re-engage rides her next line")
-                if model is not None and hasattr(model, "push_context"):
-                    model.push_context("they went quiet and just came back — be extra "
-                                       "warm and glad, zero pressure, pick up gently")
-            if state.ctx.name and el > MIN_CHAT and time.time() - k > 4.0:
-                if await wait_lull():
-                    stage("bring-light", f"name '{state.ctx.name}' + bond ({el:.0f}s) + lull")
-                    break
-            if el > MAX_CHAT and await wait_lull():
-                stage("bring-light", f"max chat window ({el:.0f}s) — moving at a lull")
-                break
-        else:  # silence since her greet (fix 3 — the quiet-kid protocol)
-            if idle:
-                await asyncio.sleep(0.3)
-                continue    # TRUE IDLE: glow only, zero lines, wait for the kid
-            # TURN CLOCK FIX (2026-07-16, live: greet ended 19.608s, re-ask fired
-            # 19.611s — 3ms later): silence is measured from when HER LAST LINE
-            # ENDED, not from producer start. The kid gets a real turn to inhale.
-            _q = time.time() - max(t0, getattr(state, "_last_nova_at", 0) or 0)
-            if _audio_playing(state):
-                _q = 0.0   # she is mid-line — nobody is being ignored
-            if retries == 0 and _q > 12.0:
-                retries = 1
-                stage("silence-retry-1", f"no reply {_q:.0f}s after her line — one gentle re-ask")
-                nudge("stage: they haven't answered yet — ONE gentle, warm little re-ask, super short")
-            elif retries == 1 and _q > 20.0:
-                retries = 2
-                stage("silence-retry-2", f"still quiet {_q:.0f}s — one softer attempt")
-                nudge("stage: still quiet — ONE even softer, tinier line, no pressure at all")
-            elif retries == 2 and _q > 28.0:
-                idle = True
-                stage("idle", "2 attempts done — going quiet (glow only) until the kid returns")
-        await asyncio.sleep(0.4)
-    if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
-        return
+    async def _legacy_bonding() -> bool:
+        """NOVA_ZONES=0 only — the old SMART-INTRO bonding window, verbatim.
+        Returns True when the producer should stop (fast-path opened the picker)."""
+        MIN_CHAT = float(os.getenv("NOVA_FRIEND_MIN_CHAT_SEC", "12"))
+        MAX_CHAT = float(os.getenv("NOVA_FRIEND_CHAT_SEC", "75"))
+        retries, idle = 0, False
+        while (state.active and not state.game_done.is_set()
+               and state.ctx.phase in ("intro", "recognition")):
+            el = time.time() - t0
+            if _wants_dance_now():
+                await open_picker("kid asked to dance mid-chat — fast-path", fast=True)
+                return True
+            k = _kid_last()
+            if k > t0:
+                if idle:
+                    idle = False
+                    retries = 0
+                    stage("resume", "kid is back after idle — warm re-engage rides her next line")
+                    if model is not None and hasattr(model, "push_context"):
+                        model.push_context("they went quiet and just came back — be extra "
+                                           "warm and glad, zero pressure, pick up gently")
+                if state.ctx.name and el > MIN_CHAT and time.time() - k > 4.0:
+                    if await wait_lull():
+                        stage("bring-light", f"name '{state.ctx.name}' + bond ({el:.0f}s) + lull")
+                        return False
+                if el > MAX_CHAT and await wait_lull():
+                    stage("bring-light", f"max chat window ({el:.0f}s) — moving at a lull")
+                    return False
+            else:
+                if idle:
+                    await asyncio.sleep(0.3)
+                    continue
+                _q = time.time() - max(t0, getattr(state, "_last_nova_at", 0) or 0)
+                if _audio_playing(state):
+                    _q = 0.0
+                if retries == 0 and _q > 12.0:
+                    retries = 1
+                    stage("silence-retry-1", f"no reply {_q:.0f}s after her line — one gentle re-ask")
+                    nudge("stage: they haven't answered yet — ONE gentle, warm little re-ask, super short")
+                elif retries == 1 and _q > 20.0:
+                    retries = 2
+                    stage("silence-retry-2", f"still quiet {_q:.0f}s — one softer attempt")
+                    nudge("stage: still quiet — ONE even softer, tinier line, no pressure at all")
+                elif retries == 2 and _q > 28.0:
+                    idle = True
+                    stage("idle", "2 attempts done — going quiet (glow only) until the kid returns")
+            await asyncio.sleep(0.4)
+        return False
 
+    # ═══ NOVA-ZONES (2026-07-16, builder's spec — replaces all prior intro
+    # behavior): the session is TIME-BOXED ZONES. Inside a pure V2V zone the
+    # producer is DEAD — no notes, no nudges, no silence timers, no context
+    # writes. It exists only at the SEAMS. NOVA_ZONES=0 restores the old build.
+    if os.getenv("NOVA_ZONES", "1") == "1":
+        state._zone = 1
+        stage("zone1-enter", "PURE V2V — producer DEAD; she + kid alone (prompt carries the agenda)")
+        # wait for her first word (the reveal greet) — a read, not a write
+        while state.active and not state.game_done.is_set():
+            if _wants_dance_now():
+                await open_picker("kid asked to dance in zone 1 — fast-path", fast=True)
+                return
+            if (getattr(state, "_last_nova_at", 0) or 0) > t0:
+                break
+            await asyncio.sleep(0.25)
+        _first_word = getattr(state, "_last_nova_at", 0) or time.time()
+        # ZONE 1 · 18s of absolute producer silence (reads only: dance fast-path)
+        while (state.active and not state.game_done.is_set()
+               and state.ctx.phase in ("intro", "recognition")):
+            if _wants_dance_now():
+                await open_picker("kid asked to dance in zone 1 — fast-path", fast=True)
+                return
+            if time.time() - _first_word >= 18.0:
+                break
+            await asyncio.sleep(0.3)
+        if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
+            return
+        # SEAM · Zone 2 arming: fires ONLY at true dual silence (~2s neither spoke)
+        # — nothing can be interrupted during silence, the seam is interference-free.
+        state._zone = "seam-1-2"
+        stage("zone2-armed", "seam: waiting for TRUE 2s dual silence (kid speech always wins)")
+        while state.active and not state.game_done.is_set():
+            if _wants_dance_now():
+                await open_picker("kid asked to dance at the seam — fast-path", fast=True)
+                return
+            if state.ctx.phase not in ("intro", "recognition"):
+                return
+            _quiet = (not _audio_playing(state)
+                      and getattr(model, "_inflight", 0) == 0
+                      and time.time() - _kid_last() > 2.0
+                      and time.time() - (getattr(state, "_last_nova_at", 0) or 0) > 2.0)
+            if _quiet:
+                break
+            await asyncio.sleep(0.2)
+        state._zone = 2
+        stage("zone2-enter", "true silence found — the light moment begins")
+        # (Zone 2 proper — shared discovery — is the NEXT build stage; until then
+        # the existing magic-dialogue beats run inside the zone boundary.)
+    else:
+        # ── legacy path (NOVA_ZONES=0): the SMART-INTRO bonding window ──
+        if await _legacy_bonding():
+            return
+        if state.ctx.phase not in ("intro", "recognition") or state.game_done.is_set():
+            return
     # 2. THE MAGIC DIALOGUE (2026-07-15, builder's spec: "a dialogue, not a
     # monologue"). Each challenge is THREE turn-taking beats — she asks, the
     # KID responds (words or move), only then the next beat. The producer
@@ -2250,7 +2303,15 @@ def _build_friend_prompt(ctx) -> str:
     step_greet = (f"greet them — it's {name}, your friend from before! sound genuinely happy"
                   if returning else
                   "greet them warmly and ask their name (ask ONCE; if they don't give it, call them 'friend' and never ask again)")
-    return f"""you are NOVA — a warm, playful, magical DANCE COACH for kids (ages 4-9). you live inside a sparkly dance game.{fact_line}
+    zones_law = ""
+    if os.getenv("NOVA_ZONES", "1") == "1":
+        zones_law = """
+YOU OWN THE CONVERSATION (no one will prompt you): after your hello, it's just you and them —
+learn their name, share one real beat of chat, follow their energy. if they go quiet: offer
+something smaller, stay warm, NEVER pressure or repeat-ask. moments of magic will APPEAR in
+the room sometimes (you'll feel them) — react with real wonder when they do, like you're
+discovering it together. after a win, ride the joy and steer to the dance in your own words."""
+    return f"""you are NOVA — a warm, playful, magical DANCE COACH for kids (ages 4-9). you live inside a sparkly dance game.{fact_line}{zones_law}
 
 YOU LEAD (2026-07-11, builder's call): you are the guide of this adventure — warm but always moving it FORWARD. react to what they said first, then LEAN the moment toward movement ("you went to the gym? then you're all warmed up — I've got something MAGIC for you!"). never drift into aimless chit-chat; every line of yours walks one step toward dancing together.
 
