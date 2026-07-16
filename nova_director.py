@@ -155,13 +155,24 @@ class MagicLight:
                           f"you can SEE it; discover it out loud with wonder and invite them to "
                           f"MOVE that shoulder, just a little shrug (never touch)", urgent=True)
     async def on_move(self, joint="right_shoulder"):
-        """ANY movement of the lit joint = the WIN. One celebration, then done."""
+        """ANY movement of the lit joint = the WIN. One celebration, then the world
+        PUSHES to the dance (builder: 'after the challenge push to dance mode —
+        one light cue and go dancing, unless the user wants to stay')."""
         if self.state != "shoulder":
             return
         self.state = "done"; await self.act["sparkle"]()
         await self.d.fact("they MOVED it — the light danced with their shoulder! celebrate them "
-                          "by name, ONCE, big — that move is called an isolation — then move on "
-                          "together toward the dancing", urgent=True)
+                          "by name, ONCE, big — that move is called an isolation — then straight "
+                          "to inviting them to dance. do NOT invent more moves or mini-games",
+                          urgent=True)
+
+        async def _push_to_dance():
+            await asyncio.sleep(7.0)   # her celebration's air time
+            act = self.d.actions.get("open_picker")
+            if act and self.d.scene and self.d.scene.name == "light":
+                log.info("[LIGHT] win ridden — the world pushes to dance (picker)")
+                await act()
+        asyncio.create_task(_push_to_dance())
     # kept for wiring compatibility: any touch/move report = the move
     async def on_touch(self, joint):
         await self.on_move(joint)

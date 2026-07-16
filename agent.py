@@ -4487,6 +4487,15 @@ async def entrypoint(ctx: JobContext):
                         if (_lgt is not None and _dir.scene and _dir.scene.name == "light"
                                 and _KID_DONE_RE.search(txt)):
                             asyncio.create_task(_lgt.on_move("right_shoulder"))
+                        # POST-WIN ASSENT (Lolo log: "Let's do it" opened nothing):
+                        # after the light win, any kid yes/ok/let's-do-it = go dance
+                        if (_lgt is not None and getattr(_lgt, "state", "") == "done"
+                                and _dir.scene and _dir.scene.name in ("light", "move_to_game")
+                                and _re.search(r"^\s*(yes+|yeah+|ok(ay)?|sure|let'?s do it|let'?s go+|go+)\b", txt, _re.I)
+                                and ("post_win_go") not in _dir._fired):
+                            _dir._fired.add("post_win_go")
+                            logger.info("[TRIGGER-OUT] post-win assent → open_picker")
+                            asyncio.create_task(_dir.actions["open_picker"]())
                         # QUESTION-flagged wiring: the KID's explicit dance-words must
                         # also open the picker (evidence: "'let's dance' → picker");
                         # the scene tables listen to HER words only.
