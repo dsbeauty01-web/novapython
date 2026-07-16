@@ -302,6 +302,50 @@ async def update_memory(req: MemoryUpdateReq):
 
 
 # ────────────────────────────────────────────────────────────────────────
+# /v2/log — AUTO SESSION LOGS (2026-07-16, builder: "each session should have
+# auto log"). The page posts its LOG_BUFFER every ~8s + at exit (sendBeacon);
+# the last 30 sessions are readable at /v2/log/recent and /v2/log/{room}.
+# In-memory only — Render restarts wipe them, which is fine for debugging.
+# ────────────────────────────────────────────────────────────────────────
+class LogReq(BaseModel):
+    room: str
+    lines: list
+
+
+_SESSION_LOGS: dict = {}
+
+
+@app.post("/v2/log")
+async def push_log(req: LogReq):
+    if not req.room or len(req.room) > 80:
+        raise HTTPException(400, "room required")
+    buf = _SESSION_LOGS.setdefault(req.room, {"at": time.time(), "lines": []})
+    buf["at"] = time.time()
+    buf["lines"].extend(req.lines[:500])
+    if len(buf["lines"]) > 4000:
+        buf["lines"] = buf["lines"][-4000:]
+    if len(_SESSION_LOGS) > 30:
+        oldest = min(_SESSION_LOGS, key=lambda k: _SESSION_LOGS[k]["at"])
+        _SESSION_LOGS.pop(oldest, None)
+    return {"ok": True, "n": len(buf["lines"])}
+
+
+@app.get("/v2/log/recent")
+async def recent_logs():
+    return {"ok": True, "sessions": sorted(
+        [{"room": k, "at": v["at"], "lines": len(v["lines"])} for k, v in _SESSION_LOGS.items()],
+        key=lambda s: -s["at"])}
+
+
+@app.get("/v2/log/{room}")
+async def get_log(room: str):
+    buf = _SESSION_LOGS.get(room)
+    if not buf:
+        raise HTTPException(404, "no log for that room")
+    return {"ok": True, "room": room, "at": buf["at"], "lines": buf["lines"]}
+
+
+# ────────────────────────────────────────────────────────────────────────
 # /v2/tts — MOBILE REAL VOICE (2026-07-15): renders one short line as mp3 in
 # HER voice (same identity as the laptop Realtime voice). Used two ways:
 #   1. build-time: pre-render the mobile page's fixed lines → mobile-voice/*.mp3
