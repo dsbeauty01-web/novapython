@@ -138,6 +138,9 @@ class CreateSessionReq(BaseModel):
     # HEBREW (?lang=he): carried in room+dispatch metadata → agent builds the
     # Hebrew persona block and turns clips off. Default "en" = behavior unchanged.
     lang: Optional[str] = None
+    # COMMERCIAL (nova-app.html): Nova interviews the kid at the ending (how was
+    # it? favorite part? coming back?) and the answers are saved. Default off.
+    endInterview: Optional[bool] = False
 
 
 @app.post("/v2/create-session")
@@ -154,7 +157,8 @@ async def create_session(req: CreateSessionReq):
     # Embed kid_id (+ mode flags) in room metadata so the agent picks it up
     room_metadata = json.dumps({"kidId": kid_id, "voiceOnly": bool(req.voiceOnly),
                                 "directGame": req.directGame or None,
-                                "lang": (req.lang or "en")})
+                                "lang": (req.lang or "en"),
+                                "endInterview": bool(req.endInterview)})
 
     token = (
         api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)

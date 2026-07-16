@@ -2616,6 +2616,42 @@ async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: 
     except Exception as e:
         logger.warning(f"[ENDING] deposit save failed: {e}")
 
+    # ═══ COMMERCIAL ENDING INTERVIEW (2026-07-16, builder's spec): before the
+    # goodbye, Nova ASKS how it was and LISTENS — a dialogue, not a survey.
+    # Answers land in memory (feedback_*) + [FEEDBACK] logs. Skipped for
+    # play-again / empty room. Each question waits for the kid's turn (10s cap).
+    if (getattr(state, "_end_interview", False)
+            and not getattr(state, "_goodbye_skip", False)
+            and not getattr(state, "_kid_away", False)):
+        async def _kid_turn(ask_at: float, cap: float = 10.0):
+            while time.time() - ask_at < cap and state.active:
+                at = max(getattr(state, "_last_kid_at", 0) or 0,
+                         getattr(state, "last_kid_speech_at", 0) or 0)
+                if at > ask_at:
+                    await asyncio.sleep(1.2)   # let the full utterance land
+                    return str(getattr(state, "last_kid_text", "") or "").strip()
+                await asyncio.sleep(0.2)
+            return ""
+        try:
+            _qs = [("feedback_fun", "okay come here — tell me the TRUTH… was it FUN today?"),
+                   ("feedback_fav", "what was your FAVORITE part?"),
+                   ("feedback_return", "will you come dance with me again tomorrow?")]
+            for _k, _q in _qs:
+                await _nova_say(session, _q)
+                _t = time.time()
+                _ans = await _kid_turn(_t)
+                logger.info(f"[FEEDBACK] {_k}: '{_ans[:120]}'" if _ans else f"[FEEDBACK] {_k}: (quiet)")
+                if _ans:
+                    try:
+                        memory.store.add_shared_fact(state.kid_id, _k, _ans[:200])
+                    except Exception:
+                        pass
+                    await _nova_say(session, random.choice(
+                        ["ohh I love that!", "really?! that makes me SO happy!", "okay okay — good to know!"]))
+                    await asyncio.sleep(0.3)
+        except Exception as _fe:
+            logger.warning(f"[FEEDBACK] interview error: {_fe}")
+
     if getattr(state, "_goodbye_skip", False):          # play-again: pure delight, no ceremony
         lines = ["AGAIN?! okay okay—"]
     elif getattr(state, "_kid_away", False):            # edge 2: never a speech to nobody
@@ -3465,6 +3501,7 @@ async def entrypoint(ctx: JobContext):
     voice_only = False
     direct_game = None
     lang = "en"   # HEBREW (?lang=he): from room/dispatch metadata; "en" = unchanged
+    end_interview = False   # COMMERCIAL (nova-app): feedback interview at the ending
     # ROOT-CAUSE FIX (2026-07-05): ctx.room.metadata is EMPTY before ctx.connect() —
     # every session ever ran as anon-* (memory never got real kid ids) and the
     # voiceOnly/directGame flags were silently lost. The JOB carries the room info
@@ -3491,13 +3528,15 @@ async def entrypoint(ctx: JobContext):
             voice_only = voice_only or bool(meta.get("voiceOnly"))
             direct_game = direct_game or meta.get("directGame") or None
             lang = meta.get("lang") or lang
-            logger.info(f"[nova-v207] metadata via {_src}: kidId={kid_id} voiceOnly={voice_only} directGame={direct_game} lang={lang}")
+            end_interview = end_interview or bool(meta.get("endInterview"))
+            logger.info(f"[nova-v207] metadata via {_src}: kidId={kid_id} voiceOnly={voice_only} directGame={direct_game} lang={lang} endInterview={end_interview}")
             break
         except Exception:
             continue
 
     state = NovaSessionState(kid_id=kid_id)
     state.ctx.lang = "he" if lang == "he" else "en"
+    state._end_interview = end_interview
     if state.ctx.lang == "he":
         logger.info("[nova-he] HEBREW session — persona block ON, clips OFF, "
                     "directed lines rendered in Hebrew")
