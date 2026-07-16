@@ -2938,7 +2938,10 @@ async def _test_speak_with_overlay(session: AgentSession, state: NovaSessionStat
 
 import re as _re
 _START_PHRASE = _re.compile(
-    r"\blet'?s\s+(start|dance|play|go)\b|\bstart\s+the\s+game\b|\bi'?m\s+ready\b"
+    # ZONES FIX (2026-07-16, Shuki log): "i'm ready" REMOVED — answering her casual
+    # "ready to wiggle?" opened the picker and skipped the magic. Only EXPLICIT
+    # dance/game words fast-path.
+    r"\blet'?s\s+(start|dance|play|go)\b|\bstart\s+the\s+game\b"
     # LEAD-FIX (2026-07-11): "No, I want to play, I want to dance" missed the
     # fast-path — want/wanna phrasings are explicit intent too
     r"|\bi\s+wan(?:t|na)\s+(?:to\s+)?(dance|play|start)\b|\bwanna\s+(dance|play)\b",
