@@ -2955,12 +2955,42 @@ async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: 
     _dir = getattr(state, "_director", None)
     if _dir is not None:
         try:
-            _fb = (" first, gently ask how it was for them — fun? favorite part? — and listen;"
-                   if getattr(state, "_end_interview", False) else "")
-            await _dir.fact(f"goodbye time.{_fb} a lovely thing to plant for tomorrow: {dep_line}", urgent=True)
+            # ENDING TONE (2026-07-17 Phase-3): the director must know WHICH ending
+            # this is — an abort got the full triumphant ceremony before.
+            if getattr(state, "_goodbye_skip", False):
+                await _dir.fact("play-again! pure delight — ONE tiny excited line, no goodbye ceremony", urgent=True)
+            elif getattr(state, "_kid_away", False):
+                await _dir.fact("the kid already left — one soft goodbye line, nothing more", urgent=True)
+            elif not completed:
+                await _dir.fact("the kid STOPPED the game early — ONE short warm line only, no ceremony, "
+                                "no celebration, no tease: something like 'that was fun — come finish it "
+                                "with me next time?'", urgent=True)
+            else:
+                _fb = (" first, gently ask how it was for them — fun? favorite part? — and listen;"
+                       if getattr(state, "_end_interview", False) else "")
+                await _dir.fact(f"goodbye time.{_fb} a lovely thing to plant for tomorrow: {dep_line}", urgent=True)
         except Exception:
             pass
         logger.info("[ENDING] director mode — her own goodbye (no scripted lines)")
+        # GOODBYE-DONE (2026-07-17 Phase-3): director mode never told the browser the
+        # goodbye finished — the end screen sat on the 30s fallback every game while
+        # she kept free-chatting over it. Wait for her goodbye line to actually play
+        # out (caps keep it safe), then release the stars.
+        async def _dir_goodbye_done():
+            try:
+                await _wait_playback_start(state, timeout=10.0)
+                await _wait_playback_end(state, grace=0.4, cap=18.0)
+            except Exception:
+                pass
+            try:
+                room = getattr(state, "room", None)
+                if room:
+                    await room.local_participant.publish_data(
+                        json.dumps({"kind": "goodbye-done"}).encode("utf-8"), reliable=True)
+                logger.info("[ENDING] director goodbye played out → goodbye-done sent")
+            except Exception:
+                pass
+        asyncio.create_task(_dir_goodbye_done())
         return
 
     if getattr(state, "_goodbye_skip", False):          # play-again: pure delight, no ceremony

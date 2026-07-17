@@ -1099,12 +1099,14 @@ GOODBYE_SCORES = {
 GOODBYE_BRAVERY   = "you kept GOING — I saw you!"
 GOODBYE_TECHBLAME = "the lights were being silly today! tomorrow we go again!"
 NEXT_GAME_TEASE = {
-    "hello":  ("next time — the WAVE. you'll LOVE it.",        "wave"),
-    "wave":   ("next time — the freeze one. you'll LOVE it.",  "freeze"),
-    "joined": ("next time — Hello Hello. you'll LOVE it.",     "hello"),
-    "freeze": ("next time — the groove one. you'll LOVE it.",  "joined"),
-    "wavemagic": ("next time — the bounce one. you'll LOVE it.", "bounce"),
-    "bounce":    ("next time — wave magic. you'll LOVE it.",     "wavemagic"),
+    # Phase-3 2026-07-17: tease ONLY pickable games — 'freeze' is not in the picker
+    # (she promised a game the kid couldn't choose).
+    "hello":  ("next time — the WAVE. you'll LOVE it.",            "wave"),
+    "wave":   ("next time — WAVE MAGIC. the magic rolls up your arm!", "wavemagic"),
+    "joined": ("next time — Hello Hello. you'll LOVE it.",         "hello"),
+    "freeze": ("next time — the groove one. you'll LOVE it.",      "joined"),
+    "wavemagic": ("next time — the bounce one. you'll LOVE it.",   "bounce"),
+    "bounce":    ("next time — wave magic. you'll LOVE it.",       "wavemagic"),
 }
 
 
