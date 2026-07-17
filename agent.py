@@ -4209,9 +4209,37 @@ async def entrypoint(ctx: JobContext):
                 # model ctor — override NovaAgent's prompt with the voice prompt
                 # (friend prompt included) so her personality survives the swap.
                 state._voice_prompt_override = evi_prompt
+                # ANTI-FLICKER source-level (2026-07-17, flicker-probe: noise in the
+                # room → her audio died AT THE SOURCE, LiveKit-side guards couldn't
+                # save it): interrupt_response=False stops the OpenAI server from
+                # truncating her mid-word on every speech_started — interruptions are
+                # decided at the LiveKit layer (min_interruption_duration + resume);
+                # far_field noise reduction kills room-noise phantom speech before
+                # the VAD sees it; threshold 0.7 (default 0.5) for kid rooms.
+                # All guarded: an older plugin/SDK just skips the extras.
+                _rt_extra = {}
+                try:
+                    try:
+                        from openai.types.realtime.realtime_audio_input_turn_detection import ServerVad as _SV
+                    except ImportError:
+                        from openai.types.beta.realtime.session import TurnDetection as _SV
+                    _rt_extra["turn_detection"] = _SV(
+                        type="server_vad", threshold=0.7, prefix_padding_ms=300,
+                        silence_duration_ms=600, create_response=True,
+                        interrupt_response=False)
+                except Exception as _tde:
+                    logger.warning(f"[ANTI-FLICKER] turn_detection extras unavailable: {_tde}")
+                try:
+                    import inspect as _oi
+                    if "input_audio_noise_reduction" in _oi.signature(
+                            openai_plugin.realtime.RealtimeModel.__init__).parameters:
+                        _rt_extra["input_audio_noise_reduction"] = "far_field"
+                except Exception:
+                    pass
+                logger.info(f"[ANTI-FLICKER] realtime extras: {sorted(_rt_extra)}")
                 session_kwargs = {
                     "llm": openai_plugin.realtime.RealtimeModel(
-                        model=_oai_model, voice=_oai_voice),
+                        model=_oai_model, voice=_oai_voice, **_rt_extra),
                     "allow_interruptions": True,
                 }
                 logger.info(f"[nova-openai] USE_OPENAI → voice = OpenAI Realtime "
