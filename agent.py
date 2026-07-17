@@ -715,7 +715,8 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
 
                 # DIRECTOR game facts (FINISH-THE-GAME 2026-07-16): the kid picked →
                 # loading fact; the music starts → the go-line moment; play-again → joy.
-                _SONG_NAMES = {"joined": "Up Groove!", "wave": "Wave!", "hello": "Hello Hello!"}
+                _SONG_NAMES = {"joined": "Up Groove!", "wave": "Wave!", "hello": "Hello Hello!",
+                               "wavemagic": "Wave Magic!", "bounce": "Bounce Groove!"}
                 if event.get("event") == "picked":
                     _dirp = getattr(state, "_director", None)
                     if _dirp is not None:
@@ -2841,6 +2842,8 @@ _BRIDGE_CLIPS = {
     ("hype", "joined"): "Up Groove?! YES — we wake your body up, part by part!",
     ("hype", "freeze"): "Freeze Dance?! YES — when the music stops, you FREEZE!",
     ("hype", "wave"):   "Wave?! YES — the magic light travels up your whole body!",
+    ("hype", "wavemagic"): "Wave Magic?! YES — the magic rolls right up your arm!",
+    ("hype", "bounce"):    "Bounce Groove?! YES — we wake your whole body with the bounce!",
     ("tip", None):      "when the light glows — that's me!",
     ("framing", None):  "step back so I can see ALL of you!",
     # 'framed' is a whisper-only beat: the GO-BEAT fires once, at phase:dance
@@ -4159,9 +4162,18 @@ async def entrypoint(ctx: JobContext):
             elif state.ctx.lang == "he":
                 # HEBREW greet (spec exact line): the generic '(greet them now)' let
                 # the model imitate the flow's English example — pin the Hebrew hello.
+                # SMOOTH INTRO (2026-07-17, builder's exact script).
                 _gemini_adapter._greet_text_override = (
-                    '(הרקדן בדיוק הופיע על המסך — ברכי אותו עכשיו, בדיוק ברוח הזאת: '
-                    '"היי היי! אני נובה — החברה הקסומה שלך! איך קוראים לך?")')
+                    '(הרקדן בדיוק הופיע על המסך והכל מוכן — ברכי אותו עכשיו, אמרי בדיוק: '
+                    '"היי! אני נובה — מורת הריקוד הקסומה שלך! איך קוראים לך?")')
+            else:
+                # SMOOTH INTRO (2026-07-17, builder's exact script: she speaks only
+                # once the browser says she is FULLY on screen; the line is pinned —
+                # no more freestyle "hey there superstar").
+                _gemini_adapter._greet_text_override = (
+                    '(the dancer just appeared on screen and everything is ready — '
+                    'greet them now, warm and excited, say EXACTLY: '
+                    '"Hi! I\'m Nova, your magical AI dance teacher! What\'s your name?")')
             state._evi_model = _gemini_adapter
             _gemini_adapter._state = state   # STAGE 1: mouth-gate reads the playback clock
             # ROOT CAUSE FIX (2026-07-09, "she doesn't reply to text"): the plugin
