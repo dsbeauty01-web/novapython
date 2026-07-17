@@ -76,9 +76,13 @@ class GeminiVoiceAdapter:
             logger.exception("[gemini] set_audio_enabled failed")
 
     def _shield(self, seconds: float, reason: str) -> None:
-        """Close the door for `seconds` (composes with the owner; kill-switch
-        NOVA_SPEECH_SHIELD=0). Auto-reopens — never leaves her deaf."""
-        if os.getenv("NOVA_SPEECH_SHIELD", "1") == "0":
+        """Close the door for `seconds` (composes with the owner). DEFAULT OFF
+        (2026-07-17 quiet-room probe: closing the door stops audio FRAMES to the
+        realtime API entirely → the server's turn state stalls and the response
+        never plays — she went fully silent even in quiet rooms). NOVA_SPEECH_SHIELD=1
+        re-arms it for experiments; the durable noise fix must send SILENCE frames,
+        not stop frames (bridge-style), or clean the mic in the browser."""
+        if os.getenv("NOVA_SPEECH_SHIELD", "0") != "1":
             return
         import time as _t
         self._shield_until = max(getattr(self, "_shield_until", 0.0), _t.time() + seconds)
