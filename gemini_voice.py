@@ -63,10 +63,35 @@ class GeminiVoiceAdapter:
         if s is None:
             return
         try:
-            s.input.set_audio_enabled(self.__ears_open)
-            logger.info(f"[EARS] gemini door {'OPEN' if self.__ears_open else 'CLOSED'}")
+            # SPEECH-SHIELD (2026-07-17 flicker): the door composes the owner's
+            # verdict with a short shield around each line's BIRTH — noise that
+            # arrives in the gen→playback gap was beheading every line (friend
+            # mode keeps the door open, server VAD truncated at the source).
+            shielded = getattr(self, "_shield_until", 0.0) > time.time()
+            eff = self.__ears_open and not shielded
+            s.input.set_audio_enabled(eff)
+            logger.info(f"[EARS] gemini door {'OPEN' if eff else 'CLOSED'}"
+                        + (" (shield)" if self.__ears_open and shielded else ""))
         except Exception:
             logger.exception("[gemini] set_audio_enabled failed")
+
+    def _shield(self, seconds: float, reason: str) -> None:
+        """Close the door for `seconds` (composes with the owner; kill-switch
+        NOVA_SPEECH_SHIELD=0). Auto-reopens — never leaves her deaf."""
+        if os.getenv("NOVA_SPEECH_SHIELD", "1") == "0":
+            return
+        import time as _t
+        self._shield_until = max(getattr(self, "_shield_until", 0.0), _t.time() + seconds)
+        logger.info(f"[SHIELD] ear shielded {seconds:.1f}s — {reason}")
+        self._apply_ears()
+
+        async def _lift():
+            await asyncio.sleep(seconds + 0.1)
+            self._apply_ears()
+        try:
+            asyncio.create_task(_lift())
+        except Exception:
+            pass
 
     # ── WHISPERS: no session_settings.context on Gemini — buffer, deliver on
     # the next directed line so her awareness still arrives (delayed, not lost).
@@ -210,6 +235,11 @@ class GeminiVoiceAdapter:
                     logger.info(f"[MOUTH-GATE] kid turn proceeds after {_cap:.0f}s wait: '{user_input[:40]}'")
             t0 = _t.time()
             self._inflight += 1
+            # SPEECH-SHIELD: every line gets a short birth shield (noise in the
+            # gen→playback gap beheaded lines at 1ms); a PROTECTED line (the
+            # greet) holds the shield through its whole playback window.
+            self._shield(7.0 if protect else 2.2,
+                         "protected line" if protect else "line birth")
             self._diag("gen-start", text=user_input[:50], inflight=self._inflight)
             try:
                 await s.generate_reply(**kwargs)
