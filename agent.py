@@ -4309,20 +4309,25 @@ async def entrypoint(ctx: JobContext):
     #   discard_audio_if_uninterruptible False — during her PROTECTED greet
     #     (gemini_voice.fire_greeting) the kid's words buffer instead of vanishing.
     # Filtered by signature so an older livekit-agents on Render never crashes.
-    try:
-        import inspect as _insp
-        _af = {
-            "resume_false_interruption": True,
-            "false_interruption_timeout": 1.2,
-            "min_interruption_duration": 0.5,
-            "discard_audio_if_uninterruptible": False,
-        }
-        _sess_params = _insp.signature(AgentSession.__init__).parameters
-        _applied = {k: v for k, v in _af.items() if k in _sess_params}
-        session_kwargs.update(_applied)
-        logger.info(f"[ANTI-FLICKER] session guards on: {sorted(_applied)}")
-    except Exception as _afe:
-        logger.warning(f"[ANTI-FLICKER] skipped: {_afe}")
+    # ANTI-FLICKER guards REVERTED (2026-07-17 night, v2v-probe: she heard ZERO
+    # spoken turns — greet fine, EAR dead; morning worker heard fine, so one of
+    # these four kwargs deafened the realtime session; re-arm NOVA_ANTI_FLICKER=1
+    # only WITH the v2v-probe in hand, one kwarg at a time):
+    if os.getenv("NOVA_ANTI_FLICKER", "0") == "1":
+        try:
+            import inspect as _insp
+            _af = {
+                "resume_false_interruption": True,
+                "false_interruption_timeout": 1.2,
+                "min_interruption_duration": 0.5,
+                "discard_audio_if_uninterruptible": False,
+            }
+            _sess_params = _insp.signature(AgentSession.__init__).parameters
+            _applied = {k: v for k, v in _af.items() if k in _sess_params}
+            session_kwargs.update(_applied)
+            logger.info(f"[ANTI-FLICKER] session guards on: {sorted(_applied)}")
+        except Exception as _afe:
+            logger.warning(f"[ANTI-FLICKER] skipped: {_afe}")
     session = AgentSession(**session_kwargs)
     logger.info("[nova-v207] step 1: AgentSession created")
     if _gemini_adapter is not None:

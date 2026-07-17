@@ -174,7 +174,11 @@ class GeminiVoiceAdapter:
         # protect=True makes THIS line uninterruptible (used for the greet only —
         # one short line by speech law; kid audio still buffers, see agent.py
         # discard_audio_if_uninterruptible=False).
-        if protect:
+        # protect=True (uninterruptible line) DISARMED by default (2026-07-17
+        # night, v2v-probe: ear dead after the greet — an uninterruptible
+        # realtime SpeechHandle is a prime suspect for wedging the session out
+        # of listening). NOVA_PROTECT_GREET=1 re-arms for probe experiments.
+        if protect and os.getenv("NOVA_PROTECT_GREET", "0") == "1":
             try:
                 import inspect as _insp
                 if "allow_interruptions" in _insp.signature(s.generate_reply).parameters:
