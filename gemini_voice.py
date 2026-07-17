@@ -17,6 +17,7 @@ Known "ok for now" tradeoffs (user-accepted):
 import asyncio
 import logging
 import os
+import time
 
 logger = logging.getLogger("nova-gemini")
 
