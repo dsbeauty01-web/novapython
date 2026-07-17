@@ -814,6 +814,11 @@ TRANSITION_BANK = {
                    "Up Groove?! okay okay — let's MOVE!"],
         "wave":   ["ohh — the Wave! so smooth!", "YESSS — the Wave! let it flow!",
                    "the Wave — ooh I love this one!"],
+        # PREGAMES-V1: the session recordings as games — pitch per build spec
+        "wavemagic": ["Wave Magic! the magic rolls up your arm!",
+                      "ohh — Wave Magic! watch me work!"],
+        "bounce":    ["Bounce Groove! we wake your WHOLE body with the bounce!",
+                      "YESSS — the bounce! here we go!"],
     },
     # (b) ONE tip — game-specific, tells them what the lights mean
     "tip": {
@@ -823,6 +828,10 @@ TRANSITION_BANK = {
                    "whatever part of me lights up, move YOURS!"],
         "wave":   ["let the light ride up your arm — shoulder to wrist!",
                    "follow the river of light down your arm!"],
+        "wavemagic": ["watch me first — then it's YOUR turn to wave!",
+                      "first you watch, then the magic is yours!"],
+        "bounce":    ["watch my bounce — then copy it!",
+                      "first watch, then bounce with me!"],
     },
     # (c) FRAMING — doubles as the step-back gate (browser confirms the body)
     "framing": ["step back so I can see ALL of you!", "take a big step back — let me see you!",
@@ -995,6 +1004,40 @@ TALK_SCORES = {
         "min_gap": 0.9,                     # burst→next-command pairs shadow the song's own pace
         "echo": {"every": 3, "pool": "hit_echo"},
     },
+    # ═══ PREGAMES-V1 (2026-07-17): video-led session games — the video is HER OWN
+    # recording (it carries its own audio, browser ducks it 0.60 under her). Talk
+    # beats live ONLY in the MEASURED gaps of the file; watch/demo phrases = silence
+    # zones (the video teaches, she shuts up). Timestamps from the build spec tables.
+    "wavemagic": {  # 80.9s · gaps: 4.5-8.5 (T1) · 38.7-42 (T2/kid-turn call)
+        "beats": [
+            (0.8,  "that's ME on screen — watch first!"),        # T1 over the settle
+            (5.0,  "this one's the MAGIC WAVE!"),                # inside the 4.0s quiet gap
+            (19.5, "see that arm?! the magic's coming…"),        # the tease (spec row 19.3-22)
+            (38.8, "your turn — wave that arm!"),                # T2: kid-turn 1 call, in the 3.3s gap
+            (47.0, "now dance WITH me — wave it all!"),          # follow-along open
+            (59.9, "other arm — wave it!"),                      # kid-turn 2 call
+            (70.3, "big finish — EVERYTHING!"),
+            (80.0, "THAT was wave magic!"),
+        ],
+        "silence": [(8.6, 19.2), (22.5, 38.5)],  # watch + the traveling-wave demo — video teaches
+        "min_gap": 2.0,
+        "echo": {"every": 2, "pool": "hit_echo"},
+    },
+    "bounce": {  # 73.6s · the ONLY quiet gap: 46-49 (T2) · nod invite at 14 per spec
+        "beats": [
+            (0.8,  "this one's about the BOUNCE!"),              # T1 over the opening burst
+            (14.0, "start nodding with me!"),                    # the soft invite (spec row)
+            (33.6, "now YOU — roll it like that!"),              # kid-turn 1 call
+            (42.0, "bounce with me — hips, head, everything!"),  # follow-along
+            (46.4, "now YOU alone — bounce!"),                   # T2 in the only quiet gap
+            (56.2, "freestyle — show me YOUR bounce!"),
+            (66.0, "big finish — bounce it ALL!"),
+            (73.0, "THAT'S the groove!"),
+        ],
+        "silence": [(5.8, 13.8), (22.7, 33.4)],  # teaching sequence + the body-roll demo
+        "min_gap": 2.0,
+        "echo": {"every": 3, "pool": "hit_echo"},
+    },
 }
 
 
@@ -1022,7 +1065,8 @@ def talk_in_silence(song_id: str, sec: float) -> bool:
 # Wave (28s) earns a QUICK close (≤3 lines); full songs get 4 lines max.
 # Callbacks must match REAL logged events; deposits rotate, never twice.
 # ════════════════════════════════════════════════════════════════════
-SONG_DUR = {"hello": 111.0, "wave": 28.5, "joined": 84.0, "freeze": 57.0}
+SONG_DUR = {"hello": 111.0, "wave": 28.5, "joined": 84.0, "freeze": 57.0,
+            "wavemagic": 80.9, "bounce": 73.6}
 
 GOODBYE_SCORES = {
     # (needed_hit_action, line) — first whose action really happened wins; "any" = any hit
@@ -1041,6 +1085,16 @@ GOODBYE_SCORES = {
     "freeze": {"quick": False, "callbacks": [
         ("freeze", "FIVE seconds of statue — champion!"),
         ("any",    "best statue I ever met!")]},
+    # PREGAMES-V1
+    "wavemagic": {"quick": False, "callbacks": [
+        ("wristwave", "that wave rolled right up your arm!"),
+        ("wavefree",  "you danced the WHOLE middle with me!"),
+        ("combo",     "the big finish — everything moved!")]},
+    "bounce": {"quick": False, "callbacks": [
+        ("hipbounce",    "your solo bounce — all YOU!"),
+        ("shoulderroll", "that body roll — smooth!"),
+        ("headbob",      "you nodded right on the beat!"),
+        ("combo",        "the finish — your whole body woke up!")]},
 }
 GOODBYE_BRAVERY   = "you kept GOING — I saw you!"
 GOODBYE_TECHBLAME = "the lights were being silly today! tomorrow we go again!"
@@ -1049,6 +1103,8 @@ NEXT_GAME_TEASE = {
     "wave":   ("next time — the freeze one. you'll LOVE it.",  "freeze"),
     "joined": ("next time — Hello Hello. you'll LOVE it.",     "hello"),
     "freeze": ("next time — the groove one. you'll LOVE it.",  "joined"),
+    "wavemagic": ("next time — the bounce one. you'll LOVE it.", "bounce"),
+    "bounce":    ("next time — wave magic. you'll LOVE it.",     "wavemagic"),
 }
 
 
@@ -1093,7 +1149,8 @@ def pick_deposit(song: str, deferred_topic, completed: bool, last_key):
 # prompt is only the fallback if this is never set. Wording avoids "kid/child"
 # (Hume moderation) — the dancer is "friend/dancer".
 # ════════════════════════════════════════════════════════════════════
-GAME_NAMES = {"hello": "Hello Hello", "wave": "the Wave", "joined": "Up Groove", "freeze": "Freeze Dance"}
+GAME_NAMES = {"hello": "Hello Hello", "wave": "the Wave", "joined": "Up Groove", "freeze": "Freeze Dance",
+              "wavemagic": "Wave Magic", "bounce": "Bounce Groove"}
 
 
 def build_evi_system_prompt(ctx: "NovaContext", direct_game: str = None) -> str:
