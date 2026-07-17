@@ -2916,7 +2916,29 @@ async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: 
     # goodbye, Nova ASKS how it was and LISTENS — a dialogue, not a survey.
     # Answers land in memory (feedback_*) + [FEEDBACK] logs. Skipped for
     # play-again / empty room. Each question waits for the kid's turn (10s cap).
+    # GOODBYE-DONE WATCHDOG (Phase-3b 2026-07-17, endings robot: goodbye-done lost
+    # the race against the browser's 30s fallback in every path): whatever happens
+    # below, the browser hears goodbye-done within 22s. Both paths mark the flag.
+    state._goodbye_done_sent = False
+    async def _send_goodbye_done(tag: str):
+        if getattr(state, "_goodbye_done_sent", False):
+            return
+        state._goodbye_done_sent = True
+        try:
+            room = getattr(state, "room", None)
+            if room:
+                await room.local_participant.publish_data(
+                    json.dumps({"kind": "goodbye-done"}).encode("utf-8"), reliable=True)
+            logger.info(f"[ENDING] goodbye-done sent ({tag})")
+        except Exception:
+            pass
+    async def _goodbye_watchdog():
+        await asyncio.sleep(22.0)
+        await _send_goodbye_done("22s watchdog")
+    asyncio.create_task(_goodbye_watchdog())
+
     if (getattr(state, "_end_interview", False)
+            and completed and not zero_hits            # Phase-3b: NEVER interview an abort/zero-hit game
             and getattr(state, "_director", None) is None   # FINAL BUILD: director mode = her own words, fact-driven
             and not getattr(state, "_goodbye_skip", False)
             and not getattr(state, "_kid_away", False)):
@@ -2938,6 +2960,11 @@ async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: 
                 _t = time.time()
                 _ans = await _kid_turn(_t)
                 logger.info(f"[FEEDBACK] {_k}: '{_ans[:120]}'" if _ans else f"[FEEDBACK] {_k}: (quiet)")
+                if not _ans:
+                    # Phase-3b: a quiet kid means STOP asking — three 10s dead-waits
+                    # pushed the whole goodbye past the browser's fallback.
+                    logger.info("[FEEDBACK] kid quiet → interview ends early")
+                    break
                 if _ans:
                     try:
                         memory.store.add_shared_fact(state.kid_id, _k, _ans[:200])
@@ -2979,17 +3006,10 @@ async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: 
         async def _dir_goodbye_done():
             try:
                 await _wait_playback_start(state, timeout=10.0)
-                await _wait_playback_end(state, grace=0.4, cap=18.0)
+                await _wait_playback_end(state, grace=0.4, cap=16.0)
             except Exception:
                 pass
-            try:
-                room = getattr(state, "room", None)
-                if room:
-                    await room.local_participant.publish_data(
-                        json.dumps({"kind": "goodbye-done"}).encode("utf-8"), reliable=True)
-                logger.info("[ENDING] director goodbye played out → goodbye-done sent")
-            except Exception:
-                pass
+            await _send_goodbye_done("director goodbye played out")
         asyncio.create_task(_dir_goodbye_done())
         return
 
@@ -3016,13 +3036,7 @@ async def _speak_goodbye(session: AgentSession, state: NovaSessionState, agent: 
     logger.info(f"[ENDING] {song} completed={completed} zero_hits={zero_hits} "
                 f"lines={len(lines)} deposit='{dep_key}' spoke_in={time.time()-t0:.1f}s")
     # stars/feedback appear only AFTER her last word
-    try:
-        room = getattr(state, "room", None)
-        if room:
-            await room.local_participant.publish_data(
-                json.dumps({"kind": "goodbye-done"}).encode("utf-8"), reliable=True)
-    except Exception:
-        pass
+    await _send_goodbye_done("scripted close finished")
 
 
 async def _drop_in_observation(session: AgentSession, state: NovaSessionState, observation: str, agent: "NovaAgent"):
