@@ -101,7 +101,9 @@ class GeminiVoiceAdapter:
                 if retry else
                 (self._greet_text_override
                  or "(the dancer just appeared on screen — greet them now)"))
-        return self._reply(user_input=text)
+        # the greet is PROTECTED: a 1ms noise blip must never behead her first line
+        # (live session aa784c31: greet cut instantly → MUTE-ALARM → 75s first word)
+        return self._reply(user_input=text, protect=not retry)
 
     def send_user_text(self, text: str, preempt: bool = False) -> bool:
         """Typed chat = a real kid turn. Whisper notes ride along as instructions.
@@ -131,13 +133,25 @@ class GeminiVoiceAdapter:
             self._pending_turn = None
             self._pending_multi = False
 
-    def _reply(self, user_input: str, preempt: bool = False) -> bool:
+    def _reply(self, user_input: str, preempt: bool = False, protect: bool = False) -> bool:
         s = self._session
         if s is None:
             logger.warning("[gemini] reply requested before bind — dropped")
             return False
         notes = self._drain_notes()
         kwargs = {"user_input": user_input}
+        # ANTI-FLICKER (2026-07-17, live session aa784c31: her talking windows were
+        # 1ms-600ms — every noise blip beheaded her, "I love"/"Loud" transcripts):
+        # protect=True makes THIS line uninterruptible (used for the greet only —
+        # one short line by speech law; kid audio still buffers, see agent.py
+        # discard_audio_if_uninterruptible=False).
+        if protect:
+            try:
+                import inspect as _insp
+                if "allow_interruptions" in _insp.signature(s.generate_reply).parameters:
+                    kwargs["allow_interruptions"] = False
+            except Exception:
+                pass
         if notes:
             kwargs["instructions"] = f"(your own awareness right now, never read aloud: {notes})"
         # HEBREW MODE (2026-07-15 probe: first 3 lines leaked English): EVERY turn

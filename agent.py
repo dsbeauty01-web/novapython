@@ -4278,6 +4278,30 @@ async def entrypoint(ctx: JobContext):
             logger.exception(f"[nova-evi] EVI init FAILED — HUME-ONLY mode, refusing ElevenLabs fallback: {e}")
             raise
 
+    # ANTI-FLICKER (2026-07-17, live session aa784c31 "voice flicker... not stable"):
+    # room noise / hallucinated speech (Polish gibberish transcripts) fired barge-in
+    # nonstop — her talking windows were 1ms-600ms, every line beheaded ("I love",
+    # "Loud"), MUTE-ALARM while she "talked". Healing, all voice paths:
+    #   resume_false_interruption — a cut with NO real kid turn behind it → she
+    #     RESUMES the same line (the flicker self-heals);
+    #   min_interruption_duration 0.5s — blips can't steal her turn;
+    #   discard_audio_if_uninterruptible False — during her PROTECTED greet
+    #     (gemini_voice.fire_greeting) the kid's words buffer instead of vanishing.
+    # Filtered by signature so an older livekit-agents on Render never crashes.
+    try:
+        import inspect as _insp
+        _af = {
+            "resume_false_interruption": True,
+            "false_interruption_timeout": 1.2,
+            "min_interruption_duration": 0.5,
+            "discard_audio_if_uninterruptible": False,
+        }
+        _sess_params = _insp.signature(AgentSession.__init__).parameters
+        _applied = {k: v for k, v in _af.items() if k in _sess_params}
+        session_kwargs.update(_applied)
+        logger.info(f"[ANTI-FLICKER] session guards on: {sorted(_applied)}")
+    except Exception as _afe:
+        logger.warning(f"[ANTI-FLICKER] skipped: {_afe}")
     session = AgentSession(**session_kwargs)
     logger.info("[nova-v207] step 1: AgentSession created")
     if _gemini_adapter is not None:
