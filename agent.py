@@ -4648,22 +4648,34 @@ async def entrypoint(ctx: JobContext):
     # because a pod died (that was today's laptop-silence root cause).
     _avatar_pick = os.getenv("NOVA_AVATAR", "pod").lower()
     if _avatar_pick == "pod":
-        _pod_base = os.getenv("NOVA_POD_VOICE_URL",
-                              "https://4mdjspk5xg3isf-8765.proxy.runpod.net").rstrip("/")
+        # DIRECT mode (2026-07-18 bridge-bypass): voice goes straight to the
+        # engine, so aliveness = the ENGINE answering (bare GET → 403/405 when
+        # alive; a dead pod's runpod proxy answers 404). Bridge mode keeps the
+        # old /voice_state check.
+        _pod_direct = os.getenv("NOVA_POD_DIRECT", "1") == "1"
+        if _pod_direct:
+            _pod_base = os.getenv("NOVA_POD_ENGINE_URL",
+                                  "https://4mdjspk5xg3isf-8011.proxy.runpod.net").rstrip("/")
+            _probe_path, _ok_statuses = "/", (200, 403, 405)
+        else:
+            _pod_base = os.getenv("NOVA_POD_VOICE_URL",
+                                  "https://4mdjspk5xg3isf-8765.proxy.runpod.net").rstrip("/")
+            _probe_path, _ok_statuses = "/voice_state", (200,)
         _pod_ok = False
         try:
             import aiohttp as _ah
             async with _ah.ClientSession() as _ps:
-                async with _ps.get(_pod_base + "/voice_state",
+                async with _ps.get(_pod_base + _probe_path,
                                    timeout=_ah.ClientTimeout(total=2.5)) as _pr:
-                    _pod_ok = (_pr.status == 200)
+                    _pod_ok = (_pr.status in _ok_statuses)
         except Exception as _pe:
             logger.warning(f"[nova-v207] pod probe error: {_pe}")
         if not _pod_ok:
             logger.error(f"[nova-v207] POD UNREACHABLE ({_pod_base}) → DIRECT VOICE fallback")
             _avatar_pick = "voice"
         else:
-            logger.info(f"[nova-v207] pod probe OK ({_pod_base}/voice_state 200) — binding pod voice")
+            logger.info(f"[nova-v207] pod probe OK ({_pod_base}{_probe_path} "
+                        f"{'direct-engine' if _pod_direct else 'bridge'}) — binding pod voice")
     if voice_only:
         # ?voiceonly session (room metadata): Nova is VOICE-ONLY by request — no
         # avatar, no credits burned. Audio publishes via RoomIO; browser shows static face.
