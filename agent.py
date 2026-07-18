@@ -4649,7 +4649,7 @@ async def entrypoint(ctx: JobContext):
     _avatar_pick = os.getenv("NOVA_AVATAR", "pod").lower()
     if _avatar_pick == "pod":
         _pod_base = os.getenv("NOVA_POD_VOICE_URL",
-                              "https://2yjr769ejqp17v-8765.proxy.runpod.net").rstrip("/")
+                              "https://4mdjspk5xg3isf-8765.proxy.runpod.net").rstrip("/")
         _pod_ok = False
         try:
             import aiohttp as _ah

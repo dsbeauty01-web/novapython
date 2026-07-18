@@ -32,7 +32,7 @@ from livekit.agents.voice import io as voice_io
 logger = logging.getLogger("nova-pod-voice")
 
 PUSH_URL = os.getenv("NOVA_POD_VOICE_URL",
-                     "https://2yjr769ejqp17v-8765.proxy.runpod.net")   # nova-v9 (2026-07-15)
+                     "https://4mdjspk5xg3isf-8765.proxy.runpod.net")   # MuseTalk pod (2026-07-18)
 
 # OWNER LOCK registry — one avatar mouth, one owner room (newest wins).
 POD_OWNER = {"room": None, "at": 0.0}
