@@ -1867,8 +1867,10 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
             if time.time() - last_fire < min_gap:
                 continue
             txt = str(getattr(state, "_last_nova_text", "") or "").lower()
-            if any(w in txt for w in ("wow", "awesome", "amazing", "love it",
-                                      "yay", "great job", "so cool", "superstar")):
+            if any(w in txt for w in ("thank you", "thanks", "so sweet", "love you")):
+                name = "thank_you"        # gratitude → little bow
+            elif any(w in txt for w in ("wow", "awesome", "amazing", "love it",
+                                        "yay", "great job", "so cool", "superstar")):
                 name = "clap_clap"        # she praises → she claps
             elif "?" in txt or "your name" in txt:
                 name = "right_hand_up"    # she asks → open inviting hand
