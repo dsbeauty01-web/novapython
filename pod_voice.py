@@ -32,7 +32,7 @@ from livekit.agents.voice import io as voice_io
 logger = logging.getLogger("nova-pod-voice")
 
 PUSH_URL = os.getenv("NOVA_POD_VOICE_URL",
-                     "https://neb35s7bh1dbyw-8765.proxy.runpod.net")   # MuseTalk pod (2026-07-18)
+                     "https://6rhav6543w1cv7-8765.proxy.runpod.net")   # MuseTalk pod (2026-07-18)
 
 # DIRECT ENGINE PUSH (2026-07-18 bridge-bypass): after the pod was dedicated to
 # MuseTalk the relay bridge went stale — /push_voice answered ok:false and the
@@ -40,7 +40,7 @@ PUSH_URL = os.getenv("NOVA_POD_VOICE_URL",
 # was audible (-20dB). The worker now does what the bridge did: resample 24k→16k,
 # wrap WAV, multipart to the engine. NOVA_POD_DIRECT=0 restores the bridge path.
 ENGINE_URL = os.getenv("NOVA_POD_ENGINE_URL",
-                       "https://neb35s7bh1dbyw-8011.proxy.runpod.net").rstrip("/")
+                       "https://6rhav6543w1cv7-8011.proxy.runpod.net").rstrip("/")
 DIRECT = os.getenv("NOVA_POD_DIRECT", "1") == "1"
 LT_RATE = 16000   # MANDATORY — the engine's lip-sync conv crashes on other rates
 

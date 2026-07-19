@@ -4655,11 +4655,11 @@ async def entrypoint(ctx: JobContext):
         _pod_direct = os.getenv("NOVA_POD_DIRECT", "1") == "1"
         if _pod_direct:
             _pod_base = os.getenv("NOVA_POD_ENGINE_URL",
-                                  "https://neb35s7bh1dbyw-8011.proxy.runpod.net").rstrip("/")
+                                  "https://6rhav6543w1cv7-8011.proxy.runpod.net").rstrip("/")
             _probe_path, _ok_statuses = "/", (200, 403, 405)
         else:
             _pod_base = os.getenv("NOVA_POD_VOICE_URL",
-                                  "https://neb35s7bh1dbyw-8765.proxy.runpod.net").rstrip("/")
+                                  "https://6rhav6543w1cv7-8765.proxy.runpod.net").rstrip("/")
             _probe_path, _ok_statuses = "/voice_state", (200,)
         _pod_ok = False
         try:
