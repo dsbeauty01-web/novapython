@@ -1839,6 +1839,51 @@ async def run_friend_intro(session: AgentSession, state: NovaSessionState,
     logger.info("[FRIEND] producer backstage — conversation is HERS")
     gesture("both_hands_up")   # her body says TA-DA as the greet lands
 
+    # ── BODY-TALK (2026-07-19, builder: "mix a gesture on her talk and chat
+    # intro, nicely and smartly"): in intro/recognition chat her body punctuates
+    # the line she JUST finished — matched to what she said, never two the same
+    # in a row, min-gap so it stays charming not twitchy. gesture() itself holds
+    # for her mouth (ORDER-LIPSYNC), so a beat can never freeze her lips.
+    # Silent while a challenge cue-lock is on (the light moment is the star).
+    # NOVA_BODY_TALK=0 kills; NOVA_BODY_TALK_GAP_S tunes the pace.
+    async def _body_talk() -> None:
+        if os.getenv("NOVA_BODY_TALK", "1") != "1":
+            return
+        min_gap = float(os.getenv("NOVA_BODY_TALK_GAP_S", "9.0"))
+        last_fire = time.time()      # the greet TA-DA just fired — space from it
+        last_name = "both_hands_up"
+        handled_at = 0.0
+        while (state.active and not state.game_done.is_set()
+               and not getattr(state, "_dance_invited", False)
+               and state.ctx.phase in ("intro", "recognition")):
+            await asyncio.sleep(0.3)
+            if getattr(state, "_challenge_active", None):
+                continue
+            aud = getattr(state, "_pod_audible_until", 0.0) or 0.0
+            # trigger: a line of hers just FINISHED coming out of the speakers
+            if not (aud and time.time() > aud and aud > handled_at):
+                continue
+            handled_at = aud
+            if time.time() - last_fire < min_gap:
+                continue
+            txt = str(getattr(state, "_last_nova_text", "") or "").lower()
+            if any(w in txt for w in ("wow", "awesome", "amazing", "love it",
+                                      "yay", "great job", "so cool", "superstar")):
+                name = "clap_clap"        # she praises → she claps
+            elif "?" in txt or "your name" in txt:
+                name = "right_hand_up"    # she asks → open inviting hand
+            elif any(w in txt for w in ("hi!", "hello", "hey there", "meet you")):
+                name = "both_hands_up"    # greeting → ta-da wave
+            else:
+                name = "left_hand_up"     # talking hands, alternating below
+            if name == last_name:         # never the same beat twice in a row
+                name = "left_hand_up" if last_name != "left_hand_up" else "right_hand_up"
+            last_name = name
+            last_fire = time.time()
+            gesture(name)
+        logger.info("[FRIEND] body-talk done (intro over)")
+    asyncio.create_task(_body_talk())
+
     # ── SMART-INTRO PRIME LAW (2026-07-10 fix list, approved): her next line
     # comes from the kid's LAST line — never from a schedule. The producer acts
     # ONLY in the quiet between exchanges. These helpers are the whole law:
