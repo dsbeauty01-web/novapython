@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 dance-project/
 node_modules/
+
+# secrets — never commit
+.env

@@ -31,6 +31,7 @@ from livekit import api
 
 import memory
 import vision
+from session_api import router as session_router
 
 load_dotenv()
 
@@ -63,6 +64,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Build 1 + 3: session recording / smart-ending / auto-analysis API (/api/v1)
+app.include_router(session_router)
 
 
 @app.get("/")
