@@ -22,7 +22,7 @@ from datetime import timedelta
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -336,6 +336,61 @@ async def push_log(req: LogReq):
         oldest = min(_SESSION_LOGS, key=lambda k: _SESSION_LOGS[k]["at"])
         _SESSION_LOGS.pop(oldest, None)
     return {"ok": True, "n": len(buf["lines"])}
+
+
+# ────────────────────────────────────────────────────────────────────────
+# /pulse — NOVA PULSE (2026-07-28): every session (even abandoned ones) ships
+# one self-report JSON. Fallback JSONL on disk so nothing is ever lost; if
+# FEEDBACK_WEBHOOK is set (founder's n8n URL), each pulse is forwarded there.
+# Body is text/plain from a sendBeacon (cross-origin json beacons are blocked),
+# so we parse the raw body ourselves rather than trusting Content-Type.
+# ────────────────────────────────────────────────────────────────────────
+@app.post("/pulse")
+async def pulse(req: Request):
+    try:
+        data = await req.json()
+    except Exception:
+        raw = await req.body()
+        data = json.loads(raw.decode("utf-8", "ignore") or "{}")
+    if not isinstance(data, dict) or "pulse" not in data:
+        raise HTTPException(400, "pulse required")
+
+    xff = req.headers.get("x-forwarded-for")
+    ip = (xff.split(",")[0].strip() if xff else (req.client.host if req.client else "0.0.0.0"))
+    country = "??"
+    try:
+        import urllib.request
+        country = urllib.request.urlopen(
+            f"https://ipapi.co/{ip}/country/", timeout=2).read().decode()[:2] or "??"
+    except Exception:
+        country = "??"
+
+    p = data["pulse"]
+    p["country"] = country
+    p["ip_last"] = ip.split(".")[-1]  # privacy: never store the full IP
+
+    line = json.dumps(p, ensure_ascii=False)
+    try:
+        with open("pulse-sessions.jsonl", "a", encoding="utf-8") as f:
+            f.write(line + "\n")          # fallback: nothing ever lost
+        with open("pulse-logs.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"id": p.get("id"), "log": (data.get("log") or [])[-400:]},
+                               ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning(f"/pulse disk write failed: {e}")
+
+    hook = os.environ.get("FEEDBACK_WEBHOOK")
+    if hook:
+        try:
+            import urllib.request
+            body = json.dumps(p, ensure_ascii=False).encode("utf-8")
+            r = urllib.request.Request(hook, data=body,
+                                       headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(r, timeout=3).read()
+        except Exception as e:
+            logger.warning(f"/pulse webhook failed: {e}")
+
+    return {"ok": True, "id": p.get("id"), "score": p.get("score"), "country": country}
 
 
 @app.get("/v2/log/recent")

@@ -6,3 +6,7 @@ node_modules/
 
 # secrets — never commit
 .env
+
+# NOVA PULSE runtime output (kid transcripts / self-reports — never commit)
+pulse-sessions.jsonl
+pulse-logs.jsonl
