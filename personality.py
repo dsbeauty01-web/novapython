@@ -597,7 +597,21 @@ def build_system_prompt(ctx: NovaContext) -> str:
             f"═══ ACTIVE OVERRIDE — FOLLOW THIS NOW ═══\n{ctx.persona_overlay}"
         )
 
-    return "\n\n".join(pieces)
+    out = "\n\n".join(pieces)
+
+    # HEBREW LANGUAGE LOCK (2026-07-28): this per-moment prompt is rebuilt by
+    # refresh_instructions() at game start and on reactions. It previously carried
+    # NO Hebrew directive (only build_evi_system_prompt did), so Nova intro'd in
+    # Hebrew then SWITCHED TO ENGLISH the instant the game prompt took over. Mirror
+    # the evi-prompt lock: the law must be the first AND last thing she reads.
+    if getattr(ctx, "lang", "en") == "he":
+        out = ("חוק עליון: את מדברת אך ורק עברית — לעולם לא אנגלית, גם אם הילד מדבר "
+               "אנגלית או שהתמלול נראה זר.\n\n") + out + (
+               "\n\nHEBREW LOCK (hard rule): every reply and every system cue is spoken "
+               "in natural, warm Israeli Hebrew — never English. The child hears ONLY "
+               "Hebrew from you, ever.")
+
+    return out
 
 
 # ════════════════════════════════════════════════════════════════════
