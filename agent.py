@@ -480,7 +480,10 @@ class NovaSessionState:
 
         elif ev == "name":
             new_name = event.get("name", "").strip()
-            if new_name:
+            if new_name and _is_garble(new_name):
+                # GARBLE WALL: nonsense never becomes a name ("hi peso!" bug, NOVA-CERTIFY P7)
+                logger.info(f"[GARBLE] ignored (name): {new_name[:30]}")
+            elif new_name:
                 self.ctx.name = new_name
                 memory.store.update(self.kid_id, name=new_name)
                 logger.info(f"[state] name captured: {new_name}")
@@ -646,6 +649,19 @@ class NovaAgent(Agent):
 # ────────────────────────────────────────────────────────────────────────
 # Per-room control channel — browser pushes game events via LiveKit data
 # ────────────────────────────────────────────────────────────────────────
+def _is_garble(t: str) -> bool:
+    # GARBLE WALL (NOVA-CERTIFY 2026-08-08) — ported VERBATIM from the pod brain
+    # (dance-project/pod/rt_lk.py "#4 GARBLE-IGNORE", the proven gate): <3 chars or
+    # mostly-non-latin nonsense = not real kid input. No name, no praise, no
+    # advance, no counter reset. CODE gate, never prompt-hope.
+    import re as _re_g
+    t = (t or "").strip()
+    if len(t) < 3:
+        return True
+    letters = _re_g.findall(r"[A-Za-z]", t)
+    return len(letters) < max(2, len(t) // 3)   # mostly non-English script -> garble
+
+
 def register_data_handler(room: rtc.Room, state: NovaSessionState, session: AgentSession, agent: "NovaAgent"):
     """Listen for game events from the browser."""
     state.room = room   # so _push_to_game can send go-picker to the browser
@@ -787,7 +803,11 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                                  "away": "they stepped out of the frame",
                                  }.get(_ev)
                         if _ev == "mic_text" and event.get("text"):
-                            _fact = f"they said to you: \"{str(event.get('text'))[:80]}\""
+                            if _is_garble(str(event.get("text"))):
+                                logger.info(f"[GARBLE] ignored (mic): {str(event.get('text'))[:30]}")
+                                _fact = None
+                            else:
+                                _fact = f"they said to you: \"{str(event.get('text'))[:80]}\""
                         if _fact:
                             asyncio.create_task(_dir.fact(_fact, urgent=(_ev in ("section", "mic_text"))))
                     elif getattr(state, "_talk_score_active", False):
@@ -943,7 +963,12 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
             elif kind == "user-said":
                 # Kid typed instead of (or alongside) speaking. Treat as voice input.
                 text = msg.get("text", "").strip()
-                if text:
+                if text and _is_garble(text):
+                    logger.info(f"[GARBLE] ignored: '{text[:30]}'")
+                    asyncio.create_task(room.local_participant.publish_data(
+                        json.dumps({"kind": "stage-diag", "decision": "garble-ignored",
+                                    "reason": text[:40]}).encode("utf-8"), reliable=True))
+                elif text:
                     logger.info(f"[chat] user-said: '{text[:80]}'")
                     asyncio.create_task(_user_said(session, state, agent, text))
 
