@@ -3847,7 +3847,7 @@ async def _run_nova(session: AgentSession, state: NovaSessionState,
             await director.enter_scene("move_to_game")
             await director.fact("the picker is on their screen with exactly three games: "
                                 "'Hello Hello!', 'Up Groove!' and 'Wave!' — help them pick one "
-                                "(never invent other games)", urgent=True)
+                                "(never invent other games)", urgent=True, nudge=True)
 
         async def start_game_handoff():
             # QUESTION-flagged mapping: the game itself starts on the kid's pick in

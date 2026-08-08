@@ -38,7 +38,7 @@ class Note:
     """Rate-limited system-note channel."""
     def __init__(self, session, min_gap=2.0):
         self.session, self.min_gap, self._last, self._batch = session, min_gap, 0.0, []
-    async def send(self, text: str, urgent=False):
+    async def send(self, text: str, urgent=False, nudge=False):
         now = time.time()
         if not urgent and now - self._last < self.min_gap:
             self._batch.append(text); return
@@ -47,6 +47,17 @@ class Note:
         self._last = now
         log.info("[NOTE] %s", text)
         await _send_system_item(self.session, text)
+        if nudge:
+            # VOICE-ONLY MUTE FIX (NOVA-CERTIFY P3, 2026-08-08): a system item alone
+            # never makes the realtime model SPEAK — the magic light fired visually
+            # and she stayed silent forever. `nudge=True` (used ONLY by the light
+            # beats and the picker offer — NEVER barge-in/bookkeeping notes) asks
+            # for exactly ONE reply; the words are still entirely hers.
+            try:
+                await self.session.generate_reply(
+                    instructions="React to the newest system note now — one short beat, your own words.")
+            except Exception:
+                log.exception("[NOTE] urgent nudge failed")
     async def flush(self):
         if self._batch:
             t = " · ".join(self._batch); self._batch = []
@@ -110,8 +121,8 @@ class Director:
         await self.rebuild_instructions(self.persona + "\n\n" + self.scene.goal)  # phase boundary ONLY
 
     # world → her (facts only, present tense, short)
-    async def fact(self, text: str, urgent=False):
-        await self.note.send(text, urgent=urgent)
+    async def fact(self, text: str, urgent=False, nudge=False):
+        await self.note.send(text, urgent=urgent, nudge=nudge)
 
     # her words → world
     async def on_her_transcript(self, text: str):
@@ -164,7 +175,7 @@ class MagicLight:
         self._armed_at = time.time() + 5.0
         await self.d.fact(f"a magic light just appeared on the kid's {joint.replace('_',' ')} — "
                           f"you can SEE it; discover it out loud with wonder and invite them to "
-                          f"MOVE that shoulder, just a little shrug (never touch)", urgent=True)
+                          f"MOVE that shoulder, just a little shrug (never touch)", urgent=True, nudge=True)
     async def on_move(self, joint="right_shoulder"):
         """ANY movement of the lit joint = the WIN. One celebration, then the world
         PUSHES to the dance (builder: 'after the challenge push to dance mode —
@@ -178,7 +189,7 @@ class MagicLight:
         await self.d.fact("they MOVED it — the light danced with their shoulder! celebrate them "
                           "by name, ONCE, big — that move is called an isolation — then straight "
                           "to inviting them to dance. do NOT invent more moves or mini-games",
-                          urgent=True)
+                          urgent=True, nudge=True)
 
         # PICKER KILLED (builder, 2026-07-16: "kill the picker"): the world NEVER
         # opens it on its own. She pushes to dance with her WORDS (celebration fact
