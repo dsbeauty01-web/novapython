@@ -169,6 +169,12 @@ class MagicLight:
         self.state, self.twinkles = "off", 0
         self._tasks = []   # strong refs: unreferenced asyncio tasks get GC'd mid-sleep
     async def appear(self, joint="right_shoulder"):
+        # LIGHT ONCE PER SESSION (NOVA-CERTIFY P5, pod law #4): a phase bounce or
+        # scene re-entry must NEVER re-fire the light. 'ever' locks it for good.
+        if getattr(self, "ever", False):
+            log.info("[LIGHT] already-done — re-trigger blocked")
+            return
+        self.ever = True
         self.state = "shoulder"; await self.act["ignite"](joint)
         # ARMING DELAY (Rafo log: typing-motion won the challenge before the kid
         # even met the light): moves count only after she's had air to introduce it.
