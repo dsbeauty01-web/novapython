@@ -279,9 +279,10 @@ async def P5():
         if any(e.get("kind") == "cue-part" for e in s.events):
             break
         await asyncio.sleep(0.5)
-    n_cues_before = sum(1 for e in s.events if e.get("kind") == "cue-part")
     await s.fact({"event": "try_move", "action": "shoulder shrug"})
     await s.wait_for_line(15)                    # her one celebration
+    await s.wait(5)                              # let the WIN visuals (sparkle/jump cue) finish
+    n_cues_before = sum(1 for e in s.events if e.get("kind") == "cue-part")
     # phase bounce: pretend the browser went to picker and back to recognition
     await s.send({"kind": "test-force-phase", "phase": "picker"})
     await s.wait(3)

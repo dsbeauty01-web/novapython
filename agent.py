@@ -739,7 +739,7 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                         _nm = _SONG_NAMES.get((event.get("song") or "").strip(), "the game")
                         asyncio.create_task(_dirp.fact(
                             f"they picked '{_nm}'! it is loading right now (just a few seconds) — "
-                            f"ride the excitement in ONE short line while it loads", urgent=True))
+                            f"ride the excitement in ONE short line while it loads", urgent=True, nudge=True))
 
                 # TALK SCORE (2026-07-05): the browser announces the song start —
                 # arm the per-song score; it owns the in-game voice from here.
@@ -749,7 +749,7 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     if _dirs is not None:
                         asyncio.create_task(_dirs.fact(
                             "the music is STARTING right now — give ONE big go-line, then the "
-                            "music leads and you stay mostly quiet", urgent=True))
+                            "music leads and you stay mostly quiet", urgent=True, nudge=True))
                     state._talk_t0 = time.time() - float(event.get("sec", 0) or 0)
                     # fresh round: ending trackers reset (play-again replays in-session)
                     state._goodbye_ran = False
@@ -773,7 +773,7 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     _dira = getattr(state, "_director", None)
                     if _dira is not None:
                         asyncio.create_task(_dira.fact(
-                            "they chose to dance AGAIN — pure joy! ride it in ONE excited line", urgent=True))
+                            "they chose to dance AGAIN — pure joy! ride it in ONE excited line", urgent=True, nudge=True))
                     else:
                         asyncio.create_task(_nova_say(session, "AGAIN?! okay okay—"))
 
