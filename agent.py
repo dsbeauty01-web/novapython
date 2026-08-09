@@ -737,6 +737,16 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                     _dirp = getattr(state, "_director", None)
                     if _dirp is not None:
                         _nm = _SONG_NAMES.get((event.get("song") or "").strip(), "the game")
+                        # TRANSITION HARD-CUT (founder 2026-08-09: "she was talking while
+                        # the game opened with no context"): a pick is a SCENE CHANGE —
+                        # any stale in-flight line is interrupted first, THEN she speaks
+                        # the loading beat with real context. No more old-thought tails
+                        # riding over the new screen.
+                        try:
+                            session.interrupt()
+                            logger.info("[TRANS] stale speech interrupted at pick")
+                        except Exception:
+                            pass
                         asyncio.create_task(_dirp.fact(
                             f"they picked '{_nm}'! it is loading right now (just a few seconds) — "
                             f"ride the excitement in ONE short line while it loads", urgent=True, nudge=True))
@@ -809,7 +819,18 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
                             else:
                                 _fact = f"they said to you: \"{str(event.get('text'))[:80]}\""
                         if _fact:
-                            asyncio.create_task(_dir.fact(_fact, urgent=(_ev in ("section", "mic_text"))))
+                            # IN-GAME VOICE (founder 2026-08-09: "she is not functioning
+                            # when game start"): hit/milestone facts were non-nudged notes
+                            # -> the realtime model NEVER voiced them -> silent games in
+                            # voice-only. Celebration events now nudge ONE line, rate-
+                            # limited to one cheer per 8s so a hit-stream can't machine-gun.
+                            _cheerable = _ev in ("hit", "first_hit", "freeze_hit", "section", "free_fun")
+                            _now_ch = time.time()
+                            _nudge_ch = _cheerable and (_now_ch - getattr(state, "_last_cheer_at", 0.0) > 8.0)
+                            if _nudge_ch:
+                                state._last_cheer_at = _now_ch
+                            asyncio.create_task(_dir.fact(_fact, urgent=(_ev in ("section", "mic_text")),
+                                                          nudge=_nudge_ch))
                     elif getattr(state, "_talk_score_active", False):
                         # the score is the conductor: real hits get the per-song echo;
                         # routine router chatter is suppressed (kid speech still routes).
