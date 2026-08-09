@@ -614,3 +614,91 @@ if __name__ == "__main__":
     except Exception:
         pass
     asyncio.run(main())
+
+
+# ────────────────────────── VOICE PROBE (real audio) ──────────────────────────
+import wave as _wave
+import audioop as _audioop
+
+VOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "certify-voice")
+
+
+def _load_wav_48k(path):
+    """wav file -> mono 48kHz int16 bytes."""
+    w = _wave.open(path, "rb")
+    rate, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+    pcm = w.readframes(w.getnframes()); w.close()
+    if sw != 2:
+        pcm = _audioop.lin2lin(pcm, sw, 2)
+    if ch == 2:
+        pcm = _audioop.tomono(pcm, 2, 0.5, 0.5)
+    if rate != 48000:
+        pcm, _ = _audioop.ratecv(pcm, 2, 1, rate, 48000, None)
+    return pcm
+
+
+class VoiceKid(KidSession):
+    """A kid with a REAL mouth: publishes a mic track and speaks wav lines."""
+
+    async def start_voice(self):
+        await self.start()
+        self.mic = rtc.AudioSource(48000, 1)
+        track = rtc.LocalAudioTrack.create_audio_track("mic", self.mic)
+        await self.room.local_participant.publish_track(
+            track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE))
+        self._log("meta", {"kind": "mic-published"})
+        asyncio.create_task(self._silence_pump())
+
+    async def _silence_pump(self):
+        # a real mic never stops sending frames — 10ms of silence keeps VAD honest
+        silence = b"\x00" * (480 * 2)
+        while True:
+            try:
+                await self.mic.capture_frame(rtc.AudioFrame(silence, 48000, 1, 480))
+            except Exception:
+                return
+            await asyncio.sleep(0.01)
+
+    async def speak(self, clip):
+        pcm = _load_wav_48k(os.path.join(VOICE_DIR, clip + ".wav"))
+        self._log("out", {"kind": "VOICE", "clip": clip, "ms": len(pcm) // 96})
+        step = 480 * 2                       # 10ms @48k mono int16
+        for i in range(0, len(pcm) - step, step):
+            await self.mic.capture_frame(rtc.AudioFrame(pcm[i:i + step], 48000, 1, 480))
+            await asyncio.sleep(0.0095)
+
+
+async def VFLOW():
+    """REAL voice-to-voice: she must hear synthesized kid AUDIO and answer."""
+    s = VoiceKid("VFLOW")
+    await s.start_voice()
+    problems = []
+    opening = await s.wait_for_line(55)
+    if not opening:
+        problems.append("STUCK: no greet")
+    await s.wait(2)
+    await s.speak("name")
+    r1 = await s.wait_for_line(18)
+    if not r1:
+        problems.append("DEAF: no reply to spoken name")
+    elif not any("lolo" in t.lower() for _, t in r1):
+        problems.append(f"MISHEARD name: {[t for _, t in r1][:2]}")
+    await s.wait(3)
+    await s.speak("yes")
+    r2 = await s.wait_for_line(18)
+    await s.wait(3)
+    await s.speak("dance")
+    r3 = await s.wait_for_line(18)
+    if not (r2 or r3):
+        problems.append("DEAF mid-flow: no reply to spoken yes/dance")
+    greets = sum(1 for _, t in s.her_lines if "i'm nova" in t.lower())
+    if greets > 1:
+        problems.append(f"RE-GREETED x{greets}")
+    ok = not problems
+    verdict("VFLOW", ok, {"problems": problems[:5],
+                          "her_lines": [t for _, t in s.her_lines][:10]})
+    await s.close()
+    return ok
+
+
+PROBES["VFLOW"] = VFLOW
