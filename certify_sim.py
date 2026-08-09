@@ -84,7 +84,7 @@ class KidSession:
             json.dumps(payload).encode("utf-8"), reliable=True)
 
     async def kid_say(self, text: str):
-        await self.send({"kind": "user-said", "text": text})
+        await self.send({"kind": "user-said", "text": text, "source": "typed"})
 
     async def fact(self, event: dict):
         # the browser nests the event object: {"kind":"game-event","event":{...}}
@@ -520,8 +520,70 @@ async def E5():
     return ok
 
 
+async def FLOW():
+    """The founder's bar: LIVE (reply <=12s to every input), never stuck, never
+    monologue (max 1 unprompted line between inputs), ONE chance on silence."""
+    s = KidSession("FLOW")
+    await s.start()
+    problems = []
+
+    async def kid(text, expect_reply=True):
+        t0 = s.now()
+        await s.kid_say(text)
+        got = await s.wait_for_line(12)
+        if expect_reply and not got:
+            problems.append(f"STUCK: no reply within 12s to '{text}'")
+        return got
+
+    opening = await s.wait_for_line(55)     # cold Render worker needs a beat on run 1
+    if not opening:
+        problems.append("STUCK: no greet")
+    await s.wait(6)
+    await kid("hi")
+    await kid("im Lolo")
+    # silence window: exactly <=1 nudge in 30s
+    t_mark = s.now()
+    await s.wait(30)
+    nudges = s.lines_since(t_mark)
+    if len(nudges) > 1:
+        problems.append(f"MONOLOGUE in silence: {[t for _, t in nudges]}")
+    await kid("yes")
+    await kid("lets dance")
+    # consent silence: no self-pick, <=1 nudge in 30s
+    t_mark = s.now()
+    await s.wait(30)
+    lines2 = s.lines_since(t_mark)
+    # response + the game-offer as the picker VISIBLY opens = a world event, not
+    # babble — allowed as long as a go-picker packet sits in the window.
+    picker_evt = any(e.get("kind") == "go-picker" and e["t"] >= t_mark for e in s.events)
+    allowed = 2 if picker_evt else 1
+    if len(lines2) > allowed:
+        problems.append(f"MONOLOGUE at picker: {[t for _, t in lines2]}")
+    txt2 = " ".join(t.lower() for _, t in lines2)
+    if any(w in txt2 for w in ("great choice", "let's go with", "starting")):
+        problems.append(f"SELF-PICK: {txt2[:120]}")
+    await kid("wave please")
+    # monologue check across the whole session: no 3 consecutive her-lines
+    # without a kid input in between
+    kid_times = [e["t"] for e in s.events if e.get("dir") == "out" and e.get("kind") == "user-said"]
+    runs, run = [], 0
+    for lt, _tx in s.her_lines[1:]:                     # skip the greet
+        if any(lt - 14 < kt < lt for kt in kid_times):
+            run = 0
+        else:
+            run += 1
+            runs.append(run)
+    if runs and max(runs) >= 3:
+        problems.append(f"MONOLOGUE chain: {max(runs)} unprompted lines")
+    ok = not problems
+    verdict("FLOW", ok, {"problems": problems[:5],
+                         "her_lines": [t for _, t in s.her_lines][:14]})
+    await s.close()
+    return ok
+
+
 PROBES = {"P1": P1, "P2": P2, "P3": P3, "P4": P4, "P5": P5, "P6": P6, "P7": P7, "P8": P8,
-          "G": G_all, "T2": T2, "T4": T4, "E5": E5}
+          "G": G_all, "T2": T2, "T4": T4, "E5": E5, "FLOW": FLOW}
 
 
 async def main():

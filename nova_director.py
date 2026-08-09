@@ -122,6 +122,13 @@ class Director:
 
     # world → her (facts only, present tense, short)
     async def fact(self, text: str, urgent=False, nudge=False):
+        # BEAT SPACING (founder bar 2026-08-09 "no monologue, ever"): a nudged beat
+        # never rides on top of a line she JUST said — wait for a 4s gap first, so
+        # world events (picker opening, light) land as a calm next beat, not babble.
+        if nudge:
+            gap = time.time() - self._her_audio_last
+            if gap < 4.0:
+                await asyncio.sleep(4.0 - gap)
         await self.note.send(text, urgent=urgent, nudge=nudge)
 
     # her words → world
