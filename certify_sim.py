@@ -668,10 +668,15 @@ class VoiceKid(KidSession):
     async def speak(self, clip):
         pcm = _load_wav_48k(os.path.join(VOICE_DIR, clip + ".wav"))
         self._log("out", {"kind": "VOICE", "clip": clip, "ms": len(pcm) // 96})
-        step = 480 * 2                       # 10ms @48k mono int16
-        for i in range(0, len(pcm) - step, step):
-            await self.mic.capture_frame(rtc.AudioFrame(pcm[i:i + step], 48000, 1, 480))
-            await asyncio.sleep(0.0095)
+        self._speaking = True
+        await asyncio.sleep(0.03)            # let the pump yield the mic
+        try:
+            step = 480 * 2                   # 10ms @48k mono int16
+            for i in range(0, len(pcm) - step, step):
+                await self.mic.capture_frame(rtc.AudioFrame(pcm[i:i + step], 48000, 1, 480))
+                await asyncio.sleep(0.0095)
+        finally:
+            self._speaking = False
 
 
 async def VFLOW():
