@@ -4210,6 +4210,9 @@ async def entrypoint(ctx: JobContext):
             # in, "Nova heard: Paležki" = the TV). 0.55 default + env override:
             # the kid is close to the mic, the TV is not. Tune live with
             # NOVA_VAD_THRESHOLD, no redeploy.
+            # LAW-V2V-FROZEN: these VAD ctor values are behind the sacred-pipe law.
+            # CI greps this marker — changing these lines without a founder-signed
+            # LAWS.md decision goes RED. (dance-project/LAWS.md law-v2v)
             activation_threshold=float(os.getenv("NOVA_VAD_THRESHOLD", "0.55")),
         ),
         # VAD-based turn detection. Interrupting her now takes ~1.2s of SUSTAINED

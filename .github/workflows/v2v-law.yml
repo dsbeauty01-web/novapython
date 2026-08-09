@@ -1,0 +1,14 @@
+# LAW-V2V enforcement (dance-project/LAWS.md "the sacred pipe"): the VAD ctor in
+# agent.py is frozen behind the LAW-V2V-FROZEN marker. If a session edits those
+# lines away, this goes RED. Founder-signed LAWS.md decisions update this file too.
+name: v2v law
+on: [push, pull_request]
+jobs:
+  sacred-pipe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: VAD ctor is behind the law
+        run: |
+          grep -q "LAW-V2V-FROZEN" agent.py || { echo "law-v2v marker GONE — the sacred pipe was touched"; exit 1; }
+          grep -q "NOVA_VAD_THRESHOLD" agent.py || { echo "VAD env knob removed"; exit 1; }
