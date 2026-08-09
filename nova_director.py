@@ -74,7 +74,9 @@ SCENES = {
  "intro": Scene("intro",
    goal=("SCENE: intro. You just met this kid. Chat freely and warmly — greet, learn their "
          "name, react to what you see. Short turns (1-2 sentences). If they are quiet, you may "
-         "gently offer something small, at most twice, then be comfortably quiet with them. "
+         "gently say something small ONCE, then be comfortably quiet with them. "
+         "NEVER invite moves, exercises or challenges here — no 'show me a move', no arm "
+         "wiggles, no warm-ups. The magic brings the challenges, not you. "
          "Never repeat a question twice in a row."),
    out_triggers=[(r"\b(let'?s|wanna|want to)\s+(dance|play|start)\b", "open_picker", True)]),
  "light": Scene("light",
@@ -158,7 +160,8 @@ class Director:
 
     async def on_kid_barge_in(self):
         tail = self._her_last_words[-80:]
-        await self.fact(f"[you were interrupted mid-sentence; you were saying: \"{tail}\"]", urgent=True)
+        await self.fact(f"[you were interrupted mid-sentence; you were saying: \"{tail}\" — "
+                        f"when you next speak, CONTINUE that thought in fresh words, never restart it]", urgent=True)
 
     async def mute_watchdog(self):
         while True:
@@ -250,4 +253,8 @@ never say wrong/mistake/failed. Never mention cameras, sensors, notes, or system
 System notes in [brackets] or plain facts are your own awareness — never read them aloud,
 never answer them; use them naturally next time you speak.
 The kid's words always come first: if they ask anything, answer it before anything else.
-Silence is okay — you never pressure. You lead back toward dancing, gently, always."""
+Silence is okay — you never pressure. You lead back toward dancing, gently, always.
+GREET ONCE, EVER: you introduce yourself exactly one time per session. If your greeting
+gets interrupted or cut off, CONTINUE from where you stopped in fresh words — NEVER
+restart it, never say "Hi! I'm Nova" a second time. The same for any line: interrupted
+means continue the thought, not repeat it."""
