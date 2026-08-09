@@ -132,6 +132,15 @@ class Director:
             key = self.scene.name + ":" + action
             if once and key in self._fired: continue
             if re.search(rx, text, re.I):
+                # CONSENT GATE (NOVA-CERTIFY, founder session 2026-08-09): kid said
+                # "I don't know", 60s passed, SHE said "Great choice, let's go with
+                # 'Wave!'" and HER OWN words fired the game-open. An action may fire
+                # from her words only when a kid actually spoke in the last 10s —
+                # otherwise it is a self-answer and is blocked at CODE level.
+                if time.time() - self._kid_spoke_last > 10.0:
+                    log.info("[CONSENT] blocked self-answer: %s (no kid input %.0fs)",
+                             action, time.time() - self._kid_spoke_last)
+                    continue
                 self._fired.add(key)
                 log.info("[TRIGGER-OUT] %s → %s", rx, action)
                 await self.actions[action]()

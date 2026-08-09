@@ -4178,16 +4178,20 @@ async def entrypoint(ctx: JobContext):
             min_silence_duration=0.3,
             prefix_padding_duration=0.2,
             # HEARING gate. 0.6 made her DEAF to quiet/cafe speech (no transcripts at
-            # all). 0.45 = catch soft voices; noise robustness comes from
-            # min_interruption_duration below, NOT from making her deaf.
-            activation_threshold=0.45,
+            # all). 0.45 caught soft voices but a HOME TV beheaded every line
+            # (founder log 2026-08-09: "Rafi, that shoulder—" / "We've got—" cut 1-2s
+            # in, "Nova heard: Paležki" = the TV). 0.55 default + env override:
+            # the kid is close to the mic, the TV is not. Tune live with
+            # NOVA_VAD_THRESHOLD, no redeploy.
+            activation_threshold=float(os.getenv("NOVA_VAD_THRESHOLD", "0.55")),
         ),
-        # VAD-based turn detection. Require ~0.6s of SUSTAINED speech to INTERRUPT her
-        # (Runway can't pause to resume a false interruption), but this does NOT gate
-        # whether she hears the kid when she's silent — activation_threshold does that.
+        # VAD-based turn detection. Interrupting her now takes ~1.2s of SUSTAINED
+        # closer-than-TV speech (was 0.6s — the TV tripped it constantly). A kid who
+        # really wants to interrupt talks longer than that; a TV burst usually dips.
+        # Tune live with NOVA_MIN_INTERRUPT.
         turn_detection="vad",
         allow_interruptions=True,
-        min_interruption_duration=0.6,
+        min_interruption_duration=float(os.getenv("NOVA_MIN_INTERRUPT", "1.2")),
     )
     # Turn-detector disabled: its model file (model_q8.onnx) wasn't available
     # in this environment. Silero VAD (already configured) handles turn-taking
