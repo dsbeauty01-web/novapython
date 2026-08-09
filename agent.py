@@ -963,7 +963,13 @@ def register_data_handler(room: rtc.Room, state: NovaSessionState, session: Agen
             elif kind == "user-said":
                 # Kid typed instead of (or alongside) speaking. Treat as voice input.
                 text = msg.get("text", "").strip()
-                if text and _is_garble(text):
+                # TYPED EXEMPTION (founder session 2026-08-09): the garble wall ate a
+                # typed "hi" (<3 chars). Typing IS deliberate — pure-letter typed text
+                # of any length is real input; the wall still blocks non-latin noise.
+                _typed = (msg.get("source") == "typed")
+                import re as _re_t
+                _pure = bool(_re_t.fullmatch(r"[A-Za-z][A-Za-z !?'.,-]*", text or ""))
+                if text and _is_garble(text) and not (_typed and _pure):
                     logger.info(f"[GARBLE] ignored: '{text[:30]}'")
                     asyncio.create_task(room.local_participant.publish_data(
                         json.dumps({"kind": "stage-diag", "decision": "garble-ignored",

@@ -168,6 +168,17 @@ class Director:
                         await alarm(self.scene.name if self.scene else "?")
                     except Exception:
                         pass
+                # SELF-HEAL (founder session 2026-08-09: she went mute 25s+ while the
+                # kid kept talking — a beheaded generation left her stuck). The alarm
+                # now also REVIVES her: one gentle pickup line, never a monologue.
+                try:
+                    await self.session.generate_reply(
+                        instructions="You went quiet mid-conversation. Pick up warmly "
+                                     "with ONE short line — react to the last thing the "
+                                     "kid said, or a friendly 'I'm here!' Never apologize at length.")
+                    log.info("[ALARM] self-heal reply requested")
+                except Exception:
+                    log.exception("[ALARM] self-heal failed")
                 self._her_audio_last = time.time()  # one alarm per window
 
 # ─── the light-challenge world behavior (ONE cue · a MOVE, never a touch ·
