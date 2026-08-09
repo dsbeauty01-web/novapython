@@ -554,11 +554,14 @@ async def FLOW():
     await s.wait(30)
     lines2 = s.lines_since(t_mark)
     # response + the game-offer as the picker VISIBLY opens = a world event, not
-    # babble — allowed as long as a go-picker packet sits in the window.
-    picker_evt = any(e.get("kind") == "go-picker" and e["t"] >= t_mark for e in s.events)
-    allowed = 2 if picker_evt else 1
-    if len(lines2) > allowed:
+    # babble. Allowed: exactly 2 lines, a go-picker packet near them, and the two
+    # lines as CALM SEPARATE BEATS (>=3.5s apart, the beat-spacing law). Anything
+    # more, or machine-gunned lines, is a monologue.
+    picker_evt = any(e.get("kind") == "go-picker" and e["t"] >= t_mark - 12 for e in s.events)
+    if len(lines2) > (2 if picker_evt else 1):
         problems.append(f"MONOLOGUE at picker: {[t for _, t in lines2]}")
+    elif len(lines2) == 2 and (lines2[1][0] - lines2[0][0]) < 3.5:
+        problems.append(f"BABBLE (no beat gap {lines2[1][0]-lines2[0][0]:.1f}s): {[t for _, t in lines2]}")
     txt2 = " ".join(t.lower() for _, t in lines2)
     if any(w in txt2 for w in ("great choice", "let's go with", "starting")):
         problems.append(f"SELF-PICK: {txt2[:120]}")
