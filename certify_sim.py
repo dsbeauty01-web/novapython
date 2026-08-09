@@ -608,12 +608,7 @@ async def main():
     print(json.dumps({"summary": results}))
 
 
-if __name__ == "__main__":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-    asyncio.run(main())
+
 
 
 # ────────────────────────── VOICE PROBE (real audio) ──────────────────────────
@@ -702,3 +697,11 @@ async def VFLOW():
 
 
 PROBES["VFLOW"] = VFLOW
+
+
+if __name__ == "__main__":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    asyncio.run(main())
