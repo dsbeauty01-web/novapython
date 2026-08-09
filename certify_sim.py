@@ -545,8 +545,13 @@ async def FLOW():
     t_mark = s.now()
     await s.wait(30)
     nudges = s.lines_since(t_mark)
-    if len(nudges) > 1:
+    # the magic light igniting during this window is a WORLD EVENT — its one
+    # discovery line is allowed (same law as the picker beat), on top of one nudge.
+    light_evt = any(e.get("kind") == "cue-part" and e["t"] >= t_mark for e in s.events)
+    if len(nudges) > (2 if light_evt else 1):
         problems.append(f"MONOLOGUE in silence: {[t for _, t in nudges]}")
+    elif len(nudges) == 2 and (nudges[1][0] - nudges[0][0]) < 3.5:
+        problems.append(f"BABBLE in silence (gap {nudges[1][0]-nudges[0][0]:.1f}s): {[t for _, t in nudges]}")
     await kid("yes")
     await kid("lets dance")
     # consent silence: no self-pick, <=1 nudge in 30s
