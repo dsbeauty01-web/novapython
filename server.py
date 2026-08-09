@@ -84,6 +84,56 @@ async def health():
     return {"ok": True}
 
 
+# ────────────────────────────────────────────────────────────────────────
+# LAW-DIRECT-VOICE (founder decision 2026-08-09, "u know what to do"):
+# voice runs browser ↔ OpenAI Realtime DIRECT over WebRTC. This endpoint only
+# MINTS the ephemeral client secret with her persona baked in — the worker
+# never touches audio, never runs VAD, never referees a turn. The provider
+# owns the whole voice pipe, exactly like native ChatGPT/Gemini voice.
+# ────────────────────────────────────────────────────────────────────────
+class RealtimeKeyReq(BaseModel):
+    kidName: Optional[str] = None
+    scene: Optional[str] = "intro"      # intro | light | move_to_game | dance | ending
+    voice: Optional[str] = None         # A/B override, default marin
+
+
+@app.post("/v2/realtime-key")
+async def realtime_key(req: RealtimeKeyReq):
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise HTTPException(500, "OPENAI_API_KEY not set")
+    from nova_director import PERSONA_TEXT, SCENES
+    scene = SCENES.get(req.scene or "intro")
+    instructions = PERSONA_TEXT + ("\n\n" + scene.goal if scene else "")
+    payload = {
+        "model": os.environ.get("NOVA_RT_MODEL", "gpt-realtime"),
+        "voice": (req.voice or os.environ.get("NOVA_VOICE", "marin")),
+        "instructions": instructions,
+        "modalities": ["audio", "text"],
+        # PROVIDER-OWNED TURNS — the entire point. No local VAD anywhere.
+        "turn_detection": {"type": "server_vad"},
+        "input_audio_transcription": {"model": "whisper-1"},
+    }
+    import urllib.request
+    r = urllib.request.Request(
+        "https://api.openai.com/v1/realtime/sessions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST")
+    try:
+        resp = json.loads(urllib.request.urlopen(r, timeout=10).read().decode("utf-8"))
+    except Exception as e:
+        detail = getattr(e, "read", lambda: b"")()
+        logger.error(f"[realtime-key] mint failed: {e} {detail[:200]}")
+        raise HTTPException(502, "realtime session mint failed")
+    secret = (resp.get("client_secret") or {}).get("value")
+    if not secret:
+        raise HTTPException(502, "no client_secret in response")
+    logger.info(f"[realtime-key] minted for scene={req.scene} voice={payload['voice']}")
+    return {"ok": True, "client_secret": secret, "model": payload["model"],
+            "voice": payload["voice"], "expires_at": (resp.get("client_secret") or {}).get("expires_at")}
+
+
 @app.get("/v2/diag")
 async def diag():
     """Diagnostic info for the test page — keys + recent activity."""
