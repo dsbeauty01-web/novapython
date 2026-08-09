@@ -73,10 +73,19 @@ class KidSession:
         await self.room.connect(url, token)
         self.t0 = time.time()
         self._log("meta", {"kind": "connected", "room": self.room_name})
-        # INTRO-FINAL contract: the browser's calm fade ends with reveal-now — THE one
-        # greeting trigger. The simulated kid is instantly "revealed".
-        await asyncio.sleep(1.0)
-        await self.send({"kind": "reveal-now"})
+        # INTRO-FINAL contract: reveal-now is THE greeting trigger — but it must land
+        # AFTER the worker is in the room (a real browser resends until reveal-ack;
+        # sending into an empty room = she never greets, the VFLOW deaf-silence bug).
+        async def _reveal_handshake():
+            t0 = time.time()
+            while time.time() - t0 < 20 and not any(e.get("dir") == "in" for e in self.events):
+                await asyncio.sleep(0.2)             # wait for the worker to announce
+            for _ in range(10):
+                await self.send({"kind": "reveal-now"})
+                await asyncio.sleep(2.0)
+                if any(e.get("kind") == "reveal-ack" for e in self.events):
+                    return
+        asyncio.create_task(_reveal_handshake())
 
     async def send(self, payload: dict):
         self._log("out", dict(payload))
