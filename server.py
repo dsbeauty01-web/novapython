@@ -123,9 +123,12 @@ async def realtime_key(req: RealtimeKeyReq):
     try:
         resp = json.loads(urllib.request.urlopen(r, timeout=10).read().decode("utf-8"))
     except Exception as e:
-        detail = getattr(e, "read", lambda: b"")()
-        logger.error(f"[realtime-key] mint failed: {e} {detail[:200]}")
-        raise HTTPException(502, "realtime session mint failed")
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:300]   # OpenAI error body — no secrets in it
+        except Exception:
+            detail = str(e)[:300]
+        logger.error(f"[realtime-key] mint failed: {detail}")
+        raise HTTPException(502, f"realtime session mint failed: {detail}")
     secret = (resp.get("client_secret") or {}).get("value")
     if not secret:
         raise HTTPException(502, "no client_secret in response")
