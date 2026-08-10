@@ -105,18 +105,25 @@ async def realtime_key(req: RealtimeKeyReq):
     from nova_director import PERSONA_TEXT, SCENES
     scene = SCENES.get(req.scene or "intro")
     instructions = PERSONA_TEXT + ("\n\n" + scene.goal if scene else "")
-    payload = {
-        "model": os.environ.get("NOVA_RT_MODEL", "gpt-realtime"),
-        "voice": (req.voice or os.environ.get("NOVA_VOICE", "marin")),
+    model = os.environ.get("NOVA_RT_MODEL", "gpt-realtime")
+    voice = (req.voice or os.environ.get("NOVA_VOICE", "marin"))
+    # GA Realtime mint shape (same session fields the pod brain uses over WS):
+    # POST /v1/realtime/client_secrets {"session": {...}} -> {"value": "ek_...", ...}
+    payload = {"session": {
+        "type": "realtime",
+        "model": model,
         "instructions": instructions,
-        "modalities": ["audio", "text"],
-        # PROVIDER-OWNED TURNS — the entire point. No local VAD anywhere.
-        "turn_detection": {"type": "server_vad"},
-        "input_audio_transcription": {"model": "whisper-1"},
-    }
+        "output_modalities": ["audio"],
+        "audio": {
+            "input": {"transcription": {"model": "whisper-1"},
+                      # PROVIDER-OWNED TURNS — the entire point. No local VAD anywhere.
+                      "turn_detection": {"type": "semantic_vad"}},
+            "output": {"voice": voice},
+        },
+    }}
     import urllib.request
     r = urllib.request.Request(
-        "https://api.openai.com/v1/realtime/sessions",
+        "https://api.openai.com/v1/realtime/client_secrets",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         method="POST")
@@ -129,12 +136,12 @@ async def realtime_key(req: RealtimeKeyReq):
             detail = str(e)[:300]
         logger.error(f"[realtime-key] mint failed: {detail}")
         raise HTTPException(502, f"realtime session mint failed: {detail}")
-    secret = (resp.get("client_secret") or {}).get("value")
+    secret = resp.get("value") or (resp.get("client_secret") or {}).get("value")
     if not secret:
-        raise HTTPException(502, "no client_secret in response")
-    logger.info(f"[realtime-key] minted for scene={req.scene} voice={payload['voice']}")
-    return {"ok": True, "client_secret": secret, "model": payload["model"],
-            "voice": payload["voice"], "expires_at": (resp.get("client_secret") or {}).get("expires_at")}
+        raise HTTPException(502, "no client_secret in response: " + json.dumps(resp)[:200])
+    logger.info(f"[realtime-key] minted for scene={req.scene} voice={voice}")
+    return {"ok": True, "client_secret": secret, "model": model,
+            "voice": voice, "expires_at": resp.get("expires_at")}
 
 
 @app.get("/v2/diag")
