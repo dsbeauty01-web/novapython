@@ -62,6 +62,29 @@ fix per BRAIN-6-FIXES.md, retest x3, one report then HOLD).
 - Retest battery in flight: P3 P4 P7 P7 P7 P5 (env-diag commit in logs verifies
   the deploy landed; expect 377e353 prefix).
 
+## RETEST AFTER FIXES (commit 377e353 live, verified via env-diag)
+- P3 PASS: "whoa, bobo, look at that! there's a magic light on your right shoulder—
+  let's try a tiny shoulder wiggle!" -> shrug fact -> "bobo, you rocked it—that's an
+  isolation!" — full light beat ALIVE in voice-only for the first time.
+- P7 PARTIAL: É + 谢谢你 code-gated (silent, 1 reply/run not 3). Bare "Peso" still
+  adopted — lexically indistinguishable from a legit one-word name answer ("Bobo").
+  QUESTION for founder: confirmation flow ("Peso — did I hear that right?") = new
+  architecture, not built. _extract_name fallback path is the adoption point.
+- P5 was FAIL (light re-fired on phase bounce) -> FIX SHIPPED 6d08f92: MagicLight
+  'ever' lock, logs [LIGHT] already-done. Retest x3 in flight.
+- E5 PASS: /pulse round-trip {"ok":true,"id":...,"score":3}.
+- FINAL BATTERY in flight (bglzn4sjd): P5 x3 + G(hello/joined/wave) + T2 + T4.
+
+## Report mapping decisions
+- T1 (<=3s dead air) — extract from G-* logs: picked->loading line and song_start->go-line gaps.
+- T3 (mid-game silence check-in) — the G script's 70-95s fact-free zone.
+- E1-E4 — from G/T4 ending lines (fact-built celebration, feedback ask, named goodbye;
+  emoji screen = browser-side, N/A worker).
+- P8 as specced (readiness task per game) does NOT exist in the DIRECTOR voice-only
+  flow (pick -> loading -> song start; no "show me a freeze" beat) — report N/A with
+  the pick->go evidence from G runs. Voice-only picker games are hello/joined/wave
+  (NOT freeze) — mission/product naming mismatch, QUESTION.
+
 ## Next steps (in order)
 1. Find where Director is wired in agent.py (grep Director(/enter_scene) + how
    ?voiceonly picks the agent path (server.py create-session, agent param).
