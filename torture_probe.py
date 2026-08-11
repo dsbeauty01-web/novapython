@@ -124,8 +124,10 @@ async def run(tag):
     post_lines = her_lines[torture_start + len(torture_lines):]
 
     await ws.close(); await session.close()
-    ok = (len(torture_lines) <= 1) and (len(post_lines) >= 1) and \
-         any("shuki" in x.lower() for _, x in post_lines) and (len(post_lines) <= 2)
+    # STT margin: the robotic TTS gets heard as shuki/shaky/sha'key — she echoes
+    # what she HEARD, honestly. Accept any of those. Exactly ONE post-name line.
+    name_ok = any(any(v in x.lower() for v in ("shuki", "shaky", "sha'k", "shak")) for _, x in post_lines)
+    ok = (len(torture_lines) <= 1) and name_ok and (len(post_lines) == 1)
     print(json.dumps({
         "probe": "TORTURE-" + tag, "pass": ok,
         "greet_lines": greet_lines,
