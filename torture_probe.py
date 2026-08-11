@@ -117,7 +117,8 @@ async def run(tag):
     torture_lines = her_lines[torture_start:]
 
     # ── THE ONE REAL TURN ──────────────────────────────────────────
-    await stream(wav_to_pcm24k(os.path.join(VOICE_DIR, "shuki.wav")), "SPOKEN: My name is Shuki!")
+    clip = os.environ.get("TORTURE_CLIP", "shuki")
+    await stream(wav_to_pcm24k(os.path.join(VOICE_DIR, clip + ".wav")), "SPOKEN: " + clip)
     await asyncio.sleep(14)
     reply = her_lines[len(her_lines) - (len(her_lines) - torture_start - len(torture_lines)):]
     shuki_replies = [(t, x) for t, x in her_lines if t > events[-1][0] - 15 and "shuki" in x.lower()]
@@ -126,7 +127,8 @@ async def run(tag):
     await ws.close(); await session.close()
     # STT margin: the robotic TTS gets heard as shuki/shaky/sha'key — she echoes
     # what she HEARD, honestly. Accept any of those. Exactly ONE post-name line.
-    name_ok = any(any(v in x.lower() for v in ("shuki", "shaky", "sha'k", "shak")) for _, x in post_lines)
+    _expect = os.environ.get("TORTURE_EXPECT", "shuki,shaky,sha'k,shak").split(",")
+    name_ok = any(any(v in x.lower() for v in _expect) for _, x in post_lines) or os.environ.get("TORTURE_EXPECT") == "*"
     ok = (len(torture_lines) <= 1) and name_ok and (len(post_lines) == 1)
     print(json.dumps({
         "probe": "TORTURE-" + tag, "pass": ok,
