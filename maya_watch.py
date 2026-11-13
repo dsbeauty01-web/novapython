@@ -54,22 +54,28 @@ def round_once():
         except Exception as e:
             print("maya_watch balance:", type(e).__name__, flush=True)
         try:
-            pods = req("GET", REST + "/pods")
-            pods = pods if isinstance(pods, list) else []
+            # graphql, not rest.runpod.io: REST answered every round with an HTTPError from Render's network
+            # (2026-11-13) while graphql went through, and runtime.uptimeInSeconds beats parsing createdAt anyway.
+            d = req("POST", "https://api.runpod.io/graphql",
+                    {"query": "query { myself { pods { id name desiredStatus costPerHr runtime { uptimeInSeconds } } } }"})
+            pods = ((d.get("data") or {}).get("myself") or {}).get("pods") or []
             for p in pods:
                 name, pid = p.get("name") or "", p.get("id")
                 if not pid or not name.startswith(PREFIXES):
                     continue
                 if (p.get("desiredStatus") or p.get("status")) not in ("RUNNING", None):
                     continue
-                a, rate = age_min(p), float(p.get("costPerHr") or 0)
+                up = (p.get("runtime") or {}).get("uptimeInSeconds")
+                a = up / 60 if isinstance(up, (int, float)) else age_min(p)
+                rate = float(p.get("costPerHr") or 0)
                 why = ("over %d min" % MAX_MIN if a is not None and a > MAX_MIN else
                        "rate %.2f > %.2f" % (rate, MAX_RATE) if rate > MAX_RATE else
                        "balance %.2f under %.2f" % (bal, FLOOR) if isinstance(bal, (int, float)) and bal < FLOOR else "")
                 if why:
                     print("maya_watch KILL", pid, name, why, flush=True)
                     try:
-                        req("DELETE", f"{REST}/pods/{pid}")
+                        req("POST", "https://api.runpod.io/graphql",
+                            {"query": 'mutation { podTerminate(input: {podId: "%s"}) }' % pid})
                     except Exception as e:
                         print("maya_watch kill failed", pid, type(e).__name__, flush=True)
                 else:
